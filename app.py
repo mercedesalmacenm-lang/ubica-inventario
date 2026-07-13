@@ -430,12 +430,17 @@ async function esperarServidor(){
 }
 
 (async function(){
+  const startTime = Date.now();
   const ok = await esperarServidor();
   if(!ok){
     splashErr.style.display = 'block';
     splashErr.textContent = 'El servidor tardo demasiado. Refresca la pagina.';
     return;
   }
+  const elapsed = Date.now() - startTime;
+  const minSplash = 2000;
+  const wait = elapsed < minSplash ? minSplash - elapsed : 0;
+  await new Promise(ok => setTimeout(ok, wait));
   splash.classList.add('hide');
   setTimeout(() => splash.remove(), 500);
   cargarFecha();
