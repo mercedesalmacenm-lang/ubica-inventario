@@ -46,12 +46,14 @@ app = Flask(__name__)
 
 def fecha_archivo():
     try:
-        req = urllib.request.Request(GOOGLE_SHEETS_URL, method='HEAD')
-        with urllib.request.urlopen(req) as response:
-            last_modified = response.headers.get('Last-Modified')
-            if last_modified:
-                from email.utils import parsedate_to_datetime
-                return parsedate_to_datetime(last_modified).strftime("%d/%m/%Y %H:%M")
+        resp = urllib.request.urlopen(GOOGLE_SHEETS_URL)
+        lineas = [l.decode("utf-8", errors="ignore").strip() for l in resp.readlines()[:10]]
+        for linea in lineas:
+            # Buscar una línea que contenga una fecha tipo "dd/Mes/yy hh:mm"
+            import re
+            m = re.search(r'(\d{1,2}/\w{3}/\d{2}\s+\d{1,2}:\d{2})', linea)
+            if m:
+                return m.group(1)
     except:
         pass
     return "desconocida"
