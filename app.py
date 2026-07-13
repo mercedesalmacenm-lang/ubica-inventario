@@ -30,6 +30,10 @@ COL_DESCRIPCION = "descripcion"
 COL_UBICACION = "ubicacion"
 COL_CANTIDAD = "existencia"  # opcional, pon None si no existe
 
+# Fila en la que están los encabezados (1 = primera fila, 2 = segunda, etc.)
+# Si tu hoja tiene filas vacías o títulos antes de los encabezados, ajusta esto.
+HEADER_ROW = 5
+
 MAX_RESULTADOS = 20
 
 # Puerto en el que corre la web (no lo cambies salvo que ya esté ocupado)
@@ -60,7 +64,8 @@ def normalizar(texto: str) -> str:
 
 
 def cargar_inventario() -> pd.DataFrame:
-    df = pd.read_csv(GOOGLE_SHEETS_URL, dtype=str)
+    skip = list(range(1, HEADER_ROW)) if HEADER_ROW > 1 else None
+    df = pd.read_csv(GOOGLE_SHEETS_URL, dtype=str, skiprows=skip)
     df.columns = [normalizar(c) for c in df.columns]
     return df.fillna("")
 
@@ -226,7 +231,7 @@ PAGINA = """
   </header>
   <main>
     <div class="search-wrap">
-      <input id="q" type="text" placeholder="Ej. tornillo 1/4 o TOR-1234" autofocus autocomplete="off">
+      <input id="q" type="text" placeholder="Ej. tornillo 1/4 o MF-1234" autofocus autocomplete="off">
     </div>
     <div class="status" id="status"></div>
     <div id="resultados">
