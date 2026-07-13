@@ -99,6 +99,58 @@ PAGINA = """
     font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
     min-height:100vh;
   }
+
+  /* === SPLASH SCREEN === */
+  #splash{
+    position:fixed;
+    inset:0;
+    z-index:9999;
+    background:var(--carbon);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    transition:opacity .4s ease;
+  }
+  #splash.hide{
+    opacity:0;
+    pointer-events:none;
+  }
+  #splash .splash-stripes{
+    position:absolute;
+    top:0;left:0;right:0;
+    height:6px;
+    background:repeating-linear-gradient(45deg,var(--amber) 0 14px,var(--carbon) 14px 28px);
+  }
+  #splash .splash-title{
+    font-size:28px;
+    font-weight:800;
+    margin:0 0 8px;
+    letter-spacing:-0.01em;
+  }
+  #splash .splash-sub{
+    color:var(--muted);
+    font-size:14px;
+    margin:0 0 28px;
+  }
+  .splash-spinner{
+    width:36px;height:36px;
+    border:3px solid var(--steel);
+    border-top-color:var(--amber);
+    border-radius:50%;
+    animation:spin .8s linear infinite;
+    margin-bottom:18px;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+  #splash .splash-msg{
+    color:var(--muted);
+    font-size:13px;
+    text-align:center;
+    max-width:300px;
+    line-height:1.5;
+  }
+  #splash .splash-msg .err{color:var(--miss);margin-top:8px;display:none;}
+
   .stripes{
     height:6px;
     background:repeating-linear-gradient(45deg,var(--amber) 0 14px,var(--carbon) 14px 28px);
@@ -299,6 +351,19 @@ PAGINA = """
 </style>
 </head>
 <body>
+
+  <!-- SPLASH: se muestra mientras Render despierta -->
+  <div id="splash">
+    <div class="splash-stripes"></div>
+    <div class="splash-spinner"></div>
+    <p class="splash-title">Ubica</p>
+    <p class="splash-sub">Almacen Mercedes</p>
+    <p class="splash-msg">
+      Preparando el sistema...<br>esto puede tardar unos segundos.
+      <span class="err" id="splashErr"></span>
+    </p>
+  </div>
+
   <div class="stripes"></div>
   <header>
     <p class="eyebrow">Almacén Mercedes · Consulta rápida</p>
@@ -314,7 +379,7 @@ PAGINA = """
       <p class="hint">Los resultados aparecerán aquí mientras escribes.</p>
     </div>
   </main>
-  <footer>Datos según el último export de BOSS · {{ fecha_export }}</footer>
+  <footer>Datos según el último export de BOSS · <span id="fechaExport">cargando...</span></footer>
 
   <button class="help-btn" id="helpBtn" title="Ayuda">?</button>
 
@@ -343,6 +408,46 @@ PAGINA = """
   </div>
 
 <script>
+const splash = document.getElementById('splash');
+const splashErr = document.getElementById('splashErr');
+
+async function esperarServidor(){
+  const maxIntentos = 30;
+  const intervalo = 1500;
+  for(let i = 0; i < maxIntentos; i++){
+    try{
+      const r = await fetch('/api/health', {signal: AbortSignal.timeout(3000)});
+      if(r.ok) return true;
+    }catch(e){}
+    let splashMsg = i < 5 ? 'Preparando el sistema...' :
+                i < 15 ? 'Render esta despertando, espera...' :
+                          'Casi listo, un momento mas...';
+    document.querySelector('.splash-msg').innerHTML = splashMsg +
+      '<span class="err" id="splashErr"></span>';
+    await new Promise(ok => setTimeout(ok, intervalo));
+  }
+  return false;
+}
+
+(async function(){
+  const ok = await esperarServidor();
+  if(!ok){
+    splashErr.style.display = 'block';
+    splashErr.textContent = 'El servidor tardo demasiado. Refresca la pagina.';
+    return;
+  }
+  splash.classList.add('hide');
+  setTimeout(() => splash.remove(), 500);
+  cargarFecha();
+})();
+
+async function cargarFecha(){
+  try{
+    const r = await fetch('/api/health');
+    document.getElementById('fechaExport').textContent = new Date().toLocaleDateString('es-AR');
+  }catch(e){}
+}
+
 const input = document.getElementById('q');
 const resultados = document.getElementById('resultados');
 const status = document.getElementById('status');
@@ -408,7 +513,12 @@ modal.addEventListener('click', e => { if(e.target === modal) modal.classList.re
 
 @app.route("/")
 def index():
-    return render_template_string(PAGINA, fecha_export=fecha_archivo())
+    return render_template_string(PAGINA, fecha_export="")
+
+
+@app.route("/api/health")
+def api_health():
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/buscar")
