@@ -19,7 +19,7 @@ COL_DESCRIPCION = "descripcion"
 COL_UBICACION = "ubicacion"
 COL_CANTIDAD = "existencia"
 
-HEADER_ROW = 5
+HEADER_ROW = 4
 MAX_RESULTADOS = 20
 
 SCOPES = [
