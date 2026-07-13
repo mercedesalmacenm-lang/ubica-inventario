@@ -331,13 +331,12 @@ PAGINA = """
       </ul>
 
       <h3>Mantener las existencias actualizadas</h3>
-      <p>Los datos se cargan automáticamente desde el archivo de BOSS en Google Sheets. Para que las existencias siempre estén al día:</p>
+      <p>Los datos se actualizan automáticamente. Solo necesitas:</p>
       <ul>
-        <li>Exporta el reporte de inventario desde <strong>BOSS</strong> como lo haces normalmente.</li>
-        <li>Sube o reemplaza el archivo en la hoja de Google Sheets que usa esta aplicación.</li>
-        <li>La web se actualizará sola en la próxima consulta.</li>
+        <li>Exporta el reporte de inventario desde <strong>BOSS</strong> al Escritorio.</li>
+        <li>Un monitor detecta el archivo y lo sube a Google Sheets solo.</li>
+        <li>La web se actualiza en unos segundos.</li>
       </ul>
-      <p>Si no ves los datos correctos, avisa al encargado del almacén para que actualice la hoja.</p>
 
       <button class="close-btn" id="closeModal">Entendido</button>
     </div>
