@@ -222,6 +222,39 @@ PAGINA = """
     min-height:18px;
     margin-bottom:14px;
   }
+  .pagination{
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    gap:16px;
+    margin-top:20px;
+    padding:14px 0;
+  }
+  .pag-btn{
+    background:var(--panel);
+    color:var(--paper);
+    border:1px solid var(--steel);
+    border-radius:6px;
+    padding:8px 18px;
+    font-size:14px;
+    cursor:pointer;
+    transition:all .15s ease;
+    font-family:inherit;
+  }
+  .pag-btn:hover:not([disabled]){
+    border-color:var(--amber);
+    color:var(--amber);
+  }
+  .pag-btn[disabled]{
+    opacity:.35;
+    cursor:not-allowed;
+  }
+  .pag-info{
+    font-size:13px;
+    color:var(--muted);
+    min-width:60px;
+    text-align:center;
+  }
   .card{
     background:var(--panel);
     border:1px solid var(--steel);
@@ -457,9 +490,12 @@ const input = document.getElementById('q');
 const resultados = document.getElementById('resultados');
 const status = document.getElementById('status');
 let timer = null;
+let currentPage = 1;
+let currentQ = '';
 
 input.addEventListener('input', () => {
   clearTimeout(timer);
+  currentPage = 1;
   const q = input.value.trim();
   if(!q){
     resultados.innerHTML = '<p class="hint">Los resultados aparecerán aquí mientras escribes.</p>';
@@ -467,12 +503,13 @@ input.addEventListener('input', () => {
     return;
   }
   status.textContent = 'Buscando...';
-  timer = setTimeout(() => buscar(q), 300);
+  timer = setTimeout(() => buscar(q, 1), 300);
 });
 
-async function buscar(q){
+async function buscar(q, page){
+  page = page || 1;
   try{
-    const res = await fetch('/api/buscar?q=' + encodeURIComponent(q));
+    const res = await fetch('/api/buscar?q=' + encodeURIComponent(q) + '&page=' + page);
     const data = await res.json();
     if(data.error){
       status.textContent = '';
@@ -485,10 +522,12 @@ async function buscar(q){
       resultados.innerHTML = '<p class="empty">No encontré nada para "' + q + '"</p>';
       return;
     }
-    status.textContent = data.total > items.length
-      ? 'Mostrando ' + items.length + ' de ' + data.total + ' resultados'
+    currentPage = data.page;
+    currentQ = q;
+    status.textContent = data.paginas > 1
+      ? 'Mostrando ' + items.length + ' de ' + data.total + ' resultados (página ' + data.page + '/' + data.paginas + ')'
       : items.length + ' resultado(s)';
-    resultados.innerHTML = items.map(it => `
+    let html = items.map(it => `
       <div class="card">
         <div class="cod">${it.codigo}</div>
         <div class="desc">${it.descripcion}</div>
@@ -498,10 +537,23 @@ async function buscar(q){
         </div>
       </div>
     `).join('');
+    if(data.paginas > 1){
+      html += '<div class="pagination">';
+      html += '<button class="pag-btn" onclick="irPagina(' + (currentPage - 1) + ')"' + (currentPage <= 1 ? ' disabled' : '') + '>&#9664; Anterior</button>';
+      html += '<span class="pag-info">' + currentPage + ' / ' + data.paginas + '</span>';
+      html += '<button class="pag-btn" onclick="irPagina(' + (currentPage + 1) + ')"' + (currentPage >= data.paginas ? ' disabled' : '') + '>Siguiente &#9654;</button>';
+      html += '</div>';
+    }
+    resultados.innerHTML = html;
   }catch(e){
     status.textContent = '';
     resultados.innerHTML = '<p class="empty err">Error de conexión con el servidor.</p>';
   }
+}
+
+function irPagina(page){
+  buscar(currentQ, page);
+  resultados.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
 const helpBtn = document.getElementById('helpBtn');
@@ -547,8 +599,13 @@ def api_buscar():
            df[COL_DESCRIPCION].apply(normalizar).str.contains(consulta_norm, na=False)
     filtrado = df[mask]
 
+    total = len(filtrado)
+    page = int(request.args.get("page", 1))
+    start = (page - 1) * MAX_RESULTADOS
+    paginado = filtrado.iloc[start:start + MAX_RESULTADOS]
+
     items = []
-    for _, fila in filtrado.head(MAX_RESULTADOS).iterrows():
+    for _, fila in paginado.iterrows():
         items.append({
             "codigo": fila.get(COL_CODIGO, ""),
             "descripcion": fila.get(COL_DESCRIPCION, ""),
@@ -556,7 +613,7 @@ def api_buscar():
             "cantidad": fila.get(COL_CANTIDAD, None) if COL_CANTIDAD in df.columns else None,
         })
 
-    return jsonify({"resultados": items, "total": len(filtrado)})
+    return jsonify({"resultados": items, "total": total, "page": page, "paginas": max(1, -(-total // MAX_RESULTADOS))})
 
 
 if __name__ == "__main__":
