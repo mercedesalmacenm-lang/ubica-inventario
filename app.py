@@ -66,7 +66,7 @@ def normalizar(texto: str) -> str:
 
 
 def cargar_inventario() -> pd.DataFrame:
-    skip = list(range(1, HEADER_ROW)) if HEADER_ROW > 1 else None
+    skip = list(range(0, HEADER_ROW - 1)) if HEADER_ROW > 1 else None
     df = pd.read_csv(GOOGLE_SHEETS_URL, dtype=str, skiprows=skip)
     df.columns = [normalizar(c) for c in df.columns]
     return df.fillna("")
