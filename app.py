@@ -222,6 +222,80 @@ PAGINA = """
     font-size:12px;
     padding-bottom:30px;
   }
+  .help-btn{
+    position:fixed;
+    bottom:22px;
+    right:22px;
+    width:50px;
+    height:50px;
+    border-radius:50%;
+    background:var(--amber);
+    color:var(--carbon);
+    border:none;
+    font-size:22px;
+    font-weight:800;
+    cursor:pointer;
+    box-shadow:0 4px 16px rgba(0,0,0,.4);
+    z-index:100;
+    transition:transform .15s ease;
+  }
+  .help-btn:hover{transform:scale(1.08);}
+  .modal-overlay{
+    display:none;
+    position:fixed;
+    inset:0;
+    background:rgba(0,0,0,.65);
+    z-index:200;
+    justify-content:center;
+    align-items:center;
+    padding:18px;
+  }
+  .modal-overlay.active{display:flex;}
+  .modal{
+    background:var(--panel);
+    border:1px solid var(--steel);
+    border-radius:12px;
+    max-width:480px;
+    width:100%;
+    max-height:85vh;
+    overflow-y:auto;
+    padding:28px 24px;
+  }
+  .modal h2{
+    margin:0 0 16px;
+    font-size:20px;
+    color:var(--amber);
+  }
+  .modal h3{
+    margin:18px 0 8px;
+    font-size:15px;
+    color:var(--paper);
+  }
+  .modal p, .modal li{
+    font-size:14px;
+    color:var(--muted);
+    line-height:1.6;
+    margin:0 0 10px;
+  }
+  .modal ul{
+    padding-left:20px;
+    margin:0 0 10px;
+  }
+  .modal li{margin-bottom:6px;}
+  .modal .close-btn{
+    display:block;
+    width:100%;
+    padding:12px;
+    margin-top:18px;
+    background:var(--steel);
+    color:var(--paper);
+    border:none;
+    border-radius:8px;
+    font-size:15px;
+    font-weight:600;
+    cursor:pointer;
+  }
+  .modal .close-btn:hover{background:var(--amber);color:var(--carbon);}
 </style>
 </head>
 <body>
@@ -241,6 +315,33 @@ PAGINA = """
     </div>
   </main>
   <footer>Datos según el último export de BOSS · {{ fecha_export }}</footer>
+
+  <button class="help-btn" id="helpBtn" title="Ayuda">?</button>
+
+  <div class="modal-overlay" id="modal">
+    <div class="modal">
+      <h2>Cómo usar Ubica</h2>
+
+      <h3>Buscar un artículo</h3>
+      <p>Escribe en el buscador el código (ej. <strong>MF000765</strong>) o el nombre del artículo (ej. <strong>tornillo</strong>). Los resultados se muestran mientras escribes.</p>
+      <ul>
+        <li>Puedes buscar por código, descripción o parte del nombre.</li>
+        <li>No importa si escribes en mayúsculas o minúsculas.</li>
+        <li>La <strong>ubicación</strong> que aparece en verde es donde debes buscar el artículo.</li>
+      </ul>
+
+      <h3>Mantener las existencias actualizadas</h3>
+      <p>Los datos se cargan automáticamente desde el archivo de BOSS en Google Sheets. Para que las existencias siempre estén al día:</p>
+      <ul>
+        <li>Exporta el reporte de inventario desde <strong>BOSS</strong> como lo haces normalmente.</li>
+        <li>Sube o reemplaza el archivo en la hoja de Google Sheets que usa esta aplicación.</li>
+        <li>La web se actualizará sola en la próxima consulta.</li>
+      </ul>
+      <p>Si no ves los datos correctos, avisa al encargado del almacén para que actualice la hoja.</p>
+
+      <button class="close-btn" id="closeModal">Entendido</button>
+    </div>
+  </div>
 
 <script>
 const input = document.getElementById('q');
@@ -293,6 +394,13 @@ async function buscar(q){
     resultados.innerHTML = '<p class="empty err">Error de conexión con el servidor.</p>';
   }
 }
+
+const helpBtn = document.getElementById('helpBtn');
+const modal = document.getElementById('modal');
+const closeModal = document.getElementById('closeModal');
+helpBtn.addEventListener('click', () => modal.classList.add('active'));
+closeModal.addEventListener('click', () => modal.classList.remove('active'));
+modal.addEventListener('click', e => { if(e.target === modal) modal.classList.remove('active'); });
 </script>
 </body>
 </html>
