@@ -15,6 +15,8 @@ import unicodedata
 import pandas as pd
 from flask import Flask, request, jsonify, render_template_string
 import urllib.request
+import time
+import threading
 
 # ======================= CONFIGURACIÓN =======================
 
@@ -65,11 +67,21 @@ def normalizar(texto: str) -> str:
     return "".join(c for c in texto if not unicodedata.combining(c))
 
 
+_cache = {"df": None, "ts": 0}
+TTL = 300  # 5 minutos
+
+
 def cargar_inventario() -> pd.DataFrame:
+    now = time.time()
+    if _cache["df"] is not None and now - _cache["ts"] < TTL:
+        return _cache["df"]
     skip = list(range(0, HEADER_ROW - 1)) if HEADER_ROW > 1 else None
     df = pd.read_csv(GOOGLE_SHEETS_URL, dtype=str, skiprows=skip)
     df.columns = [normalizar(c) for c in df.columns]
-    return df.fillna("")
+    df = df.fillna("")
+    _cache["df"] = df
+    _cache["ts"] = now
+    return df
 
 
 PAGINA = """
@@ -614,6 +626,13 @@ def api_buscar():
         })
 
     return jsonify({"resultados": items, "total": total, "page": page, "paginas": max(1, -(-total // MAX_RESULTADOS))})
+
+
+def prefetch():
+    cargar_inventario()
+
+
+threading.Thread(target=prefetch, daemon=True).start()
 
 
 if __name__ == "__main__":
