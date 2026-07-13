@@ -1,84 +1,75 @@
-import os
-import re
+"""
+Web de consulta de ubicaciones de inventario (BOSS)
+-----------------------------------------------------
+No requiere instalar nada en los celulares/PCs de tus compañeros: solo
+abren un link en el navegador (Chrome, el que sea) dentro de la red de
+la oficina/almacén.
+
+Requisitos (instalar una sola vez en la PC que va a servir la web):
+    pip install flask pandas openpyxl
+
+Configura las variables en la sección "CONFIGURACIÓN" antes de correrlo.
+"""
+
 import unicodedata
 import pandas as pd
 from flask import Flask, request, jsonify, render_template_string
 import urllib.request
-import gspread
-from google.oauth2.service_account import Credentials
-import openpyxl
-from datetime import datetime
 
-# ======================= CONFIGURACION =======================
+# ======================= CONFIGURACIÓN =======================
 
-SHEET_ID = os.environ.get("SHEET_ID", "1FLznJQ0PBxqnMNRPI_JEgv_QD7o7RoiodZLZmDzGE6Y")
+# ID de tu hoja de Google Sheets (parte de la URL entre /d/ y /edit)
+SHEET_ID = "1FLznJQ0PBxqnMNRPI_JEgv_QD7o7RoiodZLZmDzGE6Y"
+
+# URL de exportación como CSV (no cambiar)
 GOOGLE_SHEETS_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
+# Nombres de columnas en tu Excel (ajusta si en tu export se llaman distinto)
 COL_CODIGO = "articulo"
 COL_DESCRIPCION = "descripcion"
 COL_UBICACION = "ubicacion"
-COL_CANTIDAD = "existencia"
+COL_CANTIDAD = "existencia"  # opcional, pon None si no existe
 
+# Fila en la que están los encabezados (1 = primera fila, 2 = segunda, etc.)
+# Si tu hoja tiene filas vacías o títulos antes de los encabezados, ajusta esto.
 HEADER_ROW = 4
+
 MAX_RESULTADOS = 20
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
+# Puerto en el que corre la web (no lo cambies salvo que ya esté ocupado)
+PUERTO = 8080
 
 # ===============================================================
 
 app = Flask(__name__)
 
-def get_gspread():
-    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-    if creds_json:
-        creds_info = __import__("json").loads(creds_json)
-        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-    else:
-        creds = Credentials.from_service_account_file("./credentials.json", scopes=SCOPES)
-    client = gspread.authorize(creds)
-    return client.open_by_key(SHEET_ID)
-
-def is_boss_file(filename):
-    name = filename.replace(".xlsx", "")
-    return bool(re.match(r"^\d{14,16}$", name))
-
-def normalizar(texto):
-    texto = str(texto).lower().strip()
-    texto = unicodedata.normalize("NFKD", texto)
-    return "".join(c for c in texto if not unicodedata.combining(c))
 
 def fecha_archivo():
     try:
         resp = urllib.request.urlopen(GOOGLE_SHEETS_URL)
         lineas = [l.decode("utf-8", errors="ignore").strip() for l in resp.readlines()[:10]]
         for linea in lineas:
-            m = re.search(r"(\d{1,2}/\w{3}/\d{2}\s+\d{1,2}:\d{2})", linea)
+            # Buscar una línea que contenga una fecha tipo "dd/Mes/yy hh:mm"
+            import re
+            m = re.search(r'(\d{1,2}/\w{3}/\d{2}\s+\d{1,2}:\d{2})', linea)
             if m:
                 return m.group(1)
     except:
         pass
     return "desconocida"
 
-def cargar_inventario():
+
+def normalizar(texto: str) -> str:
+    texto = str(texto).lower().strip()
+    texto = unicodedata.normalize("NFKD", texto)
+    return "".join(c for c in texto if not unicodedata.combining(c))
+
+
+def cargar_inventario() -> pd.DataFrame:
     skip = list(range(0, HEADER_ROW - 1)) if HEADER_ROW > 1 else None
     df = pd.read_csv(GOOGLE_SHEETS_URL, dtype=str, skiprows=skip)
     df.columns = [normalizar(c) for c in df.columns]
     return df.fillna("")
-
-def subir_a_sheets(data):
-    sheet = get_gspread()
-    worksheets = sheet.worksheets()
-    if worksheets:
-        ws = worksheets[0]
-        ws.clear()
-        ws.update(range_name="A1", values=data)
-    else:
-        ws = sheet.add_worksheet(title="BOSS", rows=len(data)+10, cols=len(data[0]) if data else 10)
-        ws.update(range_name="A1", values=data)
-    return len(data)
 
 
 PAGINA = """
@@ -94,6 +85,7 @@ PAGINA = """
     --panel:#212327;
     --steel:#3a3d43;
     --amber:#f5a623;
+    --amber-dim:#8a5f16;
     --paper:#ececea;
     --muted:#8b8d92;
     --ok:#5aa96a;
@@ -127,6 +119,7 @@ PAGINA = """
     margin:0;
     font-size:26px;
     font-weight:800;
+    letter-spacing:-0.01em;
   }
   .sub{
     color:var(--muted);
@@ -153,7 +146,9 @@ PAGINA = """
     outline:none;
     transition:border-color .15s ease;
   }
-  #q:focus{border-color:var(--amber);}
+  #q:focus{
+    border-color:var(--amber);
+  }
   .search-wrap::before{
     content:"";
     position:absolute;
@@ -165,6 +160,9 @@ PAGINA = """
     border:2px solid var(--muted);
     border-radius:50%;
     box-shadow:6px 6px 0 -3px var(--muted);
+  }
+  #q:focus ~ .scanline{
+    opacity:1;
   }
   .status{
     font-size:13px;
@@ -215,73 +213,15 @@ PAGINA = """
     padding:20px 4px;
     text-align:center;
   }
-  .err{color:var(--miss);}
+  .err{
+    color:var(--miss);
+  }
   footer{
     text-align:center;
     color:var(--muted);
     font-size:12px;
     padding-bottom:30px;
   }
-
-  .upload-section{
-    margin-top:30px;
-    padding:20px;
-    border:2px dashed var(--steel);
-    border-radius:12px;
-    text-align:center;
-    transition:border-color .2s ease;
-    cursor:pointer;
-  }
-  .upload-section:hover,.upload-section.dragover{
-    border-color:var(--amber);
-  }
-  .upload-section h3{
-    margin:0 0 8px;
-    font-size:16px;
-    color:var(--amber);
-  }
-  .upload-section p{
-    margin:0;
-    font-size:13px;
-    color:var(--muted);
-  }
-  #fileInput{display:none;}
-  .upload-status{
-    margin-top:14px;
-    font-size:14px;
-    display:none;
-  }
-  .upload-status.ok{color:var(--ok);}
-  .upload-status.error{color:var(--miss);}
-  .upload-status.loading{color:var(--amber);}
-
-  .nav-btns{
-    display:flex;
-    gap:10px;
-    margin-top:24px;
-    justify-content:center;
-  }
-  .nav-btns a{
-    padding:10px 18px;
-    border-radius:8px;
-    text-decoration:none;
-    font-size:14px;
-    font-weight:600;
-    border:2px solid var(--steel);
-    color:var(--paper);
-    background:var(--panel);
-    transition:all .15s ease;
-  }
-  .nav-btns a:hover{
-    border-color:var(--amber);
-    color:var(--amber);
-  }
-  .nav-btns a.active{
-    background:var(--amber);
-    color:var(--carbon);
-    border-color:var(--amber);
-  }
-
   .help-btn{
     position:fixed;
     bottom:22px;
@@ -297,6 +237,7 @@ PAGINA = """
     cursor:pointer;
     box-shadow:0 4px 16px rgba(0,0,0,.4);
     z-index:100;
+    transition:transform .15s ease;
   }
   .help-btn:hover{transform:scale(1.08);}
   .modal-overlay{
@@ -320,15 +261,39 @@ PAGINA = """
     overflow-y:auto;
     padding:28px 24px;
   }
-  .modal h2{margin:0 0 16px;font-size:20px;color:var(--amber);}
-  .modal h3{margin:18px 0 8px;font-size:15px;color:var(--paper);}
-  .modal p,.modal li{font-size:14px;color:var(--muted);line-height:1.6;margin:0 0 10px;}
-  .modal ul{padding-left:20px;margin:0 0 10px;}
+  .modal h2{
+    margin:0 0 16px;
+    font-size:20px;
+    color:var(--amber);
+  }
+  .modal h3{
+    margin:18px 0 8px;
+    font-size:15px;
+    color:var(--paper);
+  }
+  .modal p, .modal li{
+    font-size:14px;
+    color:var(--muted);
+    line-height:1.6;
+    margin:0 0 10px;
+  }
+  .modal ul{
+    padding-left:20px;
+    margin:0 0 10px;
+  }
   .modal li{margin-bottom:6px;}
   .modal .close-btn{
-    display:block;width:100%;padding:12px;margin-top:18px;
-    background:var(--steel);color:var(--paper);border:none;
-    border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;
+    display:block;
+    width:100%;
+    padding:12px;
+    margin-top:18px;
+    background:var(--steel);
+    color:var(--paper);
+    border:none;
+    border-radius:8px;
+    font-size:15px;
+    font-weight:600;
+    cursor:pointer;
   }
   .modal .close-btn:hover{background:var(--amber);color:var(--carbon);}
 </style>
@@ -336,52 +301,44 @@ PAGINA = """
 <body>
   <div class="stripes"></div>
   <header>
-    <p class="eyebrow">Almacen Mercedes</p>
-    <h1>Ubica</h1>
-    <p class="sub">Consulta de inventario</p>
+    <p class="eyebrow">Almacén Mercedes · Consulta rápida</p>
+    <h1>¿Dónde está?</h1>
+    <p class="sub">Escribe el código o el nombre del artículo</p>
   </header>
   <main>
-    <div class="nav-btns">
-      <a href="#" class="active" id="navBuscar">Buscar</a>
-      <a href="#" id="navSubir">Subir BOSS</a>
+    <div class="search-wrap">
+      <input id="q" type="text" placeholder="Ej. tornillo 1/4 o MF-1234" autofocus autocomplete="off">
     </div>
-
-    <div id="panelBuscar">
-      <div style="margin-top:22px">
-        <div class="search-wrap">
-          <input id="q" type="text" placeholder="Codigo o nombre del articulo" autofocus autocomplete="off">
-        </div>
-        <div class="status" id="status"></div>
-        <div id="resultados">
-          <p class="hint">Escribe para buscar.</p>
-        </div>
-      </div>
-    </div>
-
-    <div id="panelSubir" style="display:none; margin-top:22px;">
-      <div class="upload-section" id="dropZone">
-        <h3>Exportar de BOSS</h3>
-        <p>Arrastra el archivo .xlsx aqui o haz clic para seleccionarlo</p>
-        <p style="margin-top:8px; font-size:12px;">El nombre debe ser numerico (ej: 2026071221275882)</p>
-        <input type="file" id="fileInput" accept=".xlsx">
-      </div>
-      <div class="upload-status" id="uploadStatus"></div>
-    </div>
-
-    <div class="nav-btns" style="margin-top:30px">
-      <a href="#" id="helpBtn">Como usar</a>
+    <div class="status" id="status"></div>
+    <div id="resultados">
+      <p class="hint">Los resultados aparecerán aquí mientras escribes.</p>
     </div>
   </main>
-  <footer>Datos segun el ultimo export de BOSS</footer>
+  <footer>Datos según el último export de BOSS · {{ fecha_export }}</footer>
+
+  <button class="help-btn" id="helpBtn" title="Ayuda">?</button>
 
   <div class="modal-overlay" id="modal">
     <div class="modal">
-      <h2>Como usar Ubica</h2>
-      <h3>Buscar</h3>
-      <p>Escribe el codigo o nombre del articulo. Los resultados aparecen mientras escribes.</p>
-      <h3>Actualizar inventario</h3>
-      <p>Exporta el reporte desde BOSS como archivo .xlsx. Luego ve a la pestana <strong>Subir BOSS</strong> y selecciona el archivo.</p>
-      <p>El archivo debe llamarse solo numeros (ej: 2026071221275882.xlsx).</p>
+      <h2>Cómo usar Ubica</h2>
+
+      <h3>Buscar un artículo</h3>
+      <p>Escribe en el buscador el código (ej. <strong>MF000765</strong>) o el nombre del artículo (ej. <strong>tornillo</strong>). Los resultados se muestran mientras escribes.</p>
+      <ul>
+        <li>Puedes buscar por código, descripción o parte del nombre.</li>
+        <li>No importa si escribes en mayúsculas o minúsculas.</li>
+        <li>La <strong>ubicación</strong> que aparece en verde es donde debes buscar el artículo.</li>
+      </ul>
+
+      <h3>Mantener las existencias actualizadas</h3>
+      <p>Los datos se cargan automáticamente desde el archivo de BOSS en Google Sheets. Para que las existencias siempre estén al día:</p>
+      <ul>
+        <li>Exporta el reporte de inventario desde <strong>BOSS</strong> como lo haces normalmente.</li>
+        <li>Sube o reemplaza el archivo en la hoja de Google Sheets que usa esta aplicación.</li>
+        <li>La web se actualizará sola en la próxima consulta.</li>
+      </ul>
+      <p>Si no ves los datos correctos, avisa al encargado del almacén para que actualice la hoja.</p>
+
       <button class="close-btn" id="closeModal">Entendido</button>
     </div>
   </div>
@@ -396,7 +353,7 @@ input.addEventListener('input', () => {
   clearTimeout(timer);
   const q = input.value.trim();
   if(!q){
-    resultados.innerHTML = '<p class="hint">Escribe para buscar.</p>';
+    resultados.innerHTML = '<p class="hint">Los resultados aparecerán aquí mientras escribes.</p>';
     status.textContent = '';
     return;
   }
@@ -416,94 +373,34 @@ async function buscar(q){
     const items = data.resultados;
     if(items.length === 0){
       status.textContent = '';
-      resultados.innerHTML = '<p class="empty">No encontre nada para "' + q + '"</p>';
+      resultados.innerHTML = '<p class="empty">No encontré nada para "' + q + '"</p>';
       return;
     }
     status.textContent = data.total > items.length
-      ? 'Mostrando ' + items.length + ' de ' + data.total
+      ? 'Mostrando ' + items.length + ' de ' + data.total + ' resultados'
       : items.length + ' resultado(s)';
     resultados.innerHTML = items.map(it => `
       <div class="card">
         <div class="cod">${it.codigo}</div>
         <div class="desc">${it.descripcion}</div>
         <div class="meta">
-          <div><span>Ubicacion</span><div class="ubic">${it.ubicacion || 'N/D'}</div></div>
-          ${it.cantidad !== null ? '<div><span>Cantidad</span><div>' + it.cantidad + '</div></div>' : ''}
+          <div><span>Ubicación</span><div class="ubic">${it.ubicacion || 'N/D'}</div></div>
+          ${it.cantidad !== null ? `<div><span>Cantidad</span><div>${it.cantidad}</div></div>` : ''}
         </div>
       </div>
     `).join('');
   }catch(e){
     status.textContent = '';
-    resultados.innerHTML = '<p class="empty err">Error de conexion.</p>';
+    resultados.innerHTML = '<p class="empty err">Error de conexión con el servidor.</p>';
   }
 }
 
-document.getElementById('navBuscar').addEventListener('click', e => {
-  e.preventDefault();
-  document.getElementById('panelBuscar').style.display = '';
-  document.getElementById('panelSubir').style.display = 'none';
-  document.getElementById('navBuscar').classList.add('active');
-  document.getElementById('navSubir').classList.remove('active');
-  input.focus();
-});
-document.getElementById('navSubir').addEventListener('click', e => {
-  e.preventDefault();
-  document.getElementById('panelBuscar').style.display = 'none';
-  document.getElementById('panelSubir').style.display = '';
-  document.getElementById('navSubir').classList.add('active');
-  document.getElementById('navBuscar').classList.remove('active');
-});
-
-const dropZone = document.getElementById('dropZone');
-const fileInput = document.getElementById('fileInput');
-const uploadStatus = document.getElementById('uploadStatus');
-
-dropZone.addEventListener('click', () => fileInput.click());
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-dropZone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropZone.classList.remove('dragover');
-  if(e.dataTransfer.files.length) subirArchivo(e.dataTransfer.files[0]);
-});
-fileInput.addEventListener('change', () => {
-  if(fileInput.files.length) subirArchivo(fileInput.files[0]);
-});
-
-async function subirArchivo(file){
-  uploadStatus.style.display = 'block';
-  uploadStatus.className = 'upload-status loading';
-  uploadStatus.textContent = 'Subiendo ' + file.name + '...';
-
-  const formData = new FormData();
-  formData.append('archivo', file);
-
-  try{
-    const res = await fetch('/api/subir', { method: 'POST', body: formData });
-    const data = await res.json();
-    if(data.error){
-      uploadStatus.className = 'upload-status error';
-      uploadStatus.textContent = data.error;
-    }else{
-      uploadStatus.className = 'upload-status ok';
-      uploadStatus.textContent = 'OK: ' + data.filas + ' filas subidas desde ' + data.archivo;
-    }
-  }catch(e){
-    uploadStatus.className = 'upload-status error';
-    uploadStatus.textContent = 'Error de conexion.';
-  }
-}
-
-document.getElementById('helpBtn').addEventListener('click', e => {
-  e.preventDefault();
-  document.getElementById('modal').classList.add('active');
-});
-document.getElementById('closeModal').addEventListener('click', () => {
-  document.getElementById('modal').classList.remove('active');
-});
-document.getElementById('modal').addEventListener('click', e => {
-  if(e.target.id === 'modal') document.getElementById('modal').classList.remove('active');
-});
+const helpBtn = document.getElementById('helpBtn');
+const modal = document.getElementById('modal');
+const closeModal = document.getElementById('closeModal');
+helpBtn.addEventListener('click', () => modal.classList.add('active'));
+closeModal.addEventListener('click', () => modal.classList.remove('active'));
+modal.addEventListener('click', e => { if(e.target === modal) modal.classList.remove('active'); });
 </script>
 </body>
 </html>
@@ -512,25 +409,30 @@ document.getElementById('modal').addEventListener('click', e => {
 
 @app.route("/")
 def index():
-    return render_template_string(PAGINA)
+    return render_template_string(PAGINA, fecha_export=fecha_archivo())
+
 
 @app.route("/api/buscar")
 def api_buscar():
     consulta = request.args.get("q", "").strip()
     if not consulta:
         return jsonify({"resultados": [], "total": 0})
+
     try:
         df = cargar_inventario()
     except FileNotFoundError:
-        return jsonify({"error": "No encuentro el archivo de inventario."})
+        return jsonify({"error": "No encuentro el archivo de inventario. Avisa al admin."})
     except Exception as e:
-        return jsonify({"error": f"Error leyendo inventario: {e}"})
+        return jsonify({"error": f"Error leyendo el inventario: {e}"})
+
     if COL_CODIGO not in df.columns or COL_DESCRIPCION not in df.columns:
         return jsonify({"error": f"Columnas no coinciden. Encontradas: {list(df.columns)}"})
+
     consulta_norm = normalizar(consulta)
     mask = df[COL_CODIGO].apply(normalizar).str.contains(consulta_norm, na=False) | \
            df[COL_DESCRIPCION].apply(normalizar).str.contains(consulta_norm, na=False)
     filtrado = df[mask]
+
     items = []
     for _, fila in filtrado.head(MAX_RESULTADOS).iterrows():
         items.append({
@@ -539,40 +441,11 @@ def api_buscar():
             "ubicacion": fila.get(COL_UBICACION, ""),
             "cantidad": fila.get(COL_CANTIDAD, None) if COL_CANTIDAD in df.columns else None,
         })
+
     return jsonify({"resultados": items, "total": len(filtrado)})
 
-@app.route("/api/subir", methods=["POST"])
-def api_subir():
-    if "archivo" not in request.files:
-        return jsonify({"error": "No se envio ningun archivo."})
-    archivo = request.files["archivo"]
-    if not archivo.filename:
-        return jsonify({"error": "Nombre de archivo vacio."})
-    if not archivo.filename.endswith(".xlsx"):
-        return jsonify({"error": "Solo se permiten archivos .xlsx"})
-    if not is_boss_file(archivo.filename):
-        return jsonify({"error": f"'{archivo.filename}' no tiene formato BOSS (debe ser solo numeros, ej: 2026071221275882.xlsx)"})
-
-    try:
-        wb = openpyxl.load_workbook(archivo, data_only=True)
-        ws_excel = wb.active
-        data = []
-        for row in ws_excel.iter_rows(values_only=True):
-            if any(cell is not None for cell in row):
-                data.append([str(cell) if cell is not None else "" for cell in row])
-        wb.close()
-
-        if not data:
-            return jsonify({"error": "El archivo esta vacio."})
-
-        filas = subir_a_sheets(data)
-        return jsonify({"archivo": archivo.filename, "filas": filas})
-    except Exception as e:
-        return jsonify({"error": f"Error procesando: {e}"})
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=False)
+    # host="0.0.0.0" permite que otras personas en la misma red (wifi/cable
+    # de la oficina) accedan desde su celular usando la IP de esta PC.
+    app.run(host="0.0.0.0", port=PUERTO, debug=False)

@@ -1,7 +1,3 @@
 flask
 pandas
 gunicorn
-gspread
-google-auth
-google-auth-oauthlib
-openpyxl
