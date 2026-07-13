@@ -438,7 +438,7 @@ async function esperarServidor(){
     return;
   }
   const elapsed = Date.now() - startTime;
-  const minSplash = 2000;
+  const minSplash = 4000;
   const wait = elapsed < minSplash ? minSplash - elapsed : 0;
   await new Promise(ok => setTimeout(ok, wait));
   splash.classList.add('hide');
