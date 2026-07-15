@@ -1,89 +1,85 @@
-"""
-Web de consulta de ubicaciones de inventario (BOSS)
------------------------------------------------------
-No requiere instalar nada en los celulares/PCs de tus compañeros: solo
-abren un link en el navegador (Chrome, el que sea) dentro de la red de
-la oficina/almacén.
-
-Requisitos (instalar una sola vez en la PC que va a servir la web):
-    pip install flask pandas openpyxl
-
-Configura las variables en la sección "CONFIGURACIÓN" antes de correrlo.
-"""
-
 import unicodedata
+import json
+import os
+import gspread
+from google.oauth2.service_account import Credentials
 import pandas as pd
 from flask import Flask, request, jsonify, render_template_string
-import urllib.request
 import time
 import threading
 
-# ======================= CONFIGURACIÓN =======================
+SHEET_ID = os.environ.get("SHEET_ID", "1FLznJQ0PBxqnMNRPI_JEgv_QD7o7RoiodZLZmDzGE6Y")
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 
-# ID de tu hoja de Google Sheets (parte de la URL entre /d/ y /edit)
-SHEET_ID = "1FLznJQ0PBxqnMNRPI_JEgv_QD7o7RoiodZLZmDzGE6Y"
-
-# URL de exportación como CSV (no cambiar)
-GOOGLE_SHEETS_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
-
-# Nombres de columnas en tu Excel (ajusta si en tu export se llaman distinto)
 COL_CODIGO = "articulo"
 COL_DESCRIPCION = "descripcion"
 COL_UBICACION = "ubicacion"
 COL_CANTIDAD = "existencia"
-COL_ALMACEN = "almacen"
-
-# Fila en la que están los encabezados (1 = primera fila, 2 = segunda, etc.)
-# Si tu hoja tiene filas vacías o títulos antes de los encabezados, ajusta esto.
-HEADER_ROW = 4
 
 MAX_RESULTADOS = 20
-
-# Puerto en el que corre la web (no lo cambies salvo que ya esté ocupado)
-PUERTO = 8080
-
-# ===============================================================
+PUERTO = int(os.environ.get("PORT", 8080))
 
 app = Flask(__name__)
 
+def get_credentials():
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+    if creds_json:
+        creds_info = json.loads(creds_json)
+        return Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+    creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE", "./credentials.json")
+    return Credentials.from_service_account_file(creds_file, scopes=SCOPES)
 
-def fecha_archivo():
-    try:
-        resp = urllib.request.urlopen(GOOGLE_SHEETS_URL)
-        lineas = [l.decode("utf-8", errors="ignore").strip() for l in resp.readlines()[:10]]
-        for linea in lineas:
-            # Buscar una línea que contenga una fecha tipo "dd/Mes/yy hh:mm"
-            import re
-            m = re.search(r'(\d{1,2}/\w{3}/\d{2}\s+\d{1,2}:\d{2})', linea)
-            if m:
-                return m.group(1)
-    except:
-        pass
-    return "desconocida"
+def get_sheet():
+    creds = get_credentials()
+    client = gspread.authorize(creds)
+    return client.open_by_key(SHEET_ID)
 
-
-def normalizar(texto: str) -> str:
+def normalizar(texto):
     texto = str(texto).lower().strip()
     texto = unicodedata.normalize("NFKD", texto)
     return "".join(c for c in texto if not unicodedata.combining(c))
 
+_cache = {"almacenes": None, "ts": 0}
+_cache_ws = {}
+TTL = 300
 
-_cache = {"df": None, "ts": 0}
-TTL = 300  # 5 minutos
-
-
-def cargar_inventario() -> pd.DataFrame:
+def get_almacenes():
     now = time.time()
-    if _cache["df"] is not None and now - _cache["ts"] < TTL:
-        return _cache["df"]
-    skip = list(range(0, HEADER_ROW - 1)) if HEADER_ROW > 1 else None
-    df = pd.read_csv(GOOGLE_SHEETS_URL, dtype=str, skiprows=skip)
-    df.columns = [normalizar(c) for c in df.columns]
-    df = df.fillna("")
-    _cache["df"] = df
-    _cache["ts"] = now
-    return df
+    if _cache["almacenes"] is not None and now - _cache["ts"] < TTL:
+        return _cache["almacenes"]
+    try:
+        sheet = get_sheet()
+        worksheets = sheet.worksheets()
+        names = [ws.title for ws in worksheets if ws.title.lower() != "hoja de cálculo 1"]
+        if not names:
+            names = [ws.title for ws in worksheets]
+        _cache["almacenes"] = names
+        _cache["ts"] = now
+        return names
+    except Exception as e:
+        print(f"[ERROR] get_almacenes: {e}")
+        return []
 
+def get_dataframe(almacen):
+    now = time.time()
+    if almacen in _cache_ws and now - _cache_ws[almacen]["ts"] < TTL:
+        return _cache_ws[almacen]["df"]
+    try:
+        sheet = get_sheet()
+        ws = sheet.worksheet(almacen)
+        data = ws.get_all_values()
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data[1:], columns=[normalizar(c) for c in data[0]])
+        df = df.fillna("")
+        _cache_ws[almacen] = {"df": df, "ts": now}
+        return df
+    except Exception as e:
+        print(f"[ERROR] get_dataframe({almacen}): {e}")
+        return pd.DataFrame()
 
 PAGINA = """
 <!doctype html>
@@ -112,333 +108,71 @@ PAGINA = """
     font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
     min-height:100vh;
   }
-
-  /* === SPLASH SCREEN === */
   #splash{
-    position:fixed;
-    inset:0;
-    z-index:9999;
+    position:fixed;inset:0;z-index:9999;
     background:var(--carbon);
-    display:flex;
-    flex-direction:column;
-    align-items:center;
-    justify-content:center;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
     transition:opacity .4s ease;
   }
-  #splash.hide{
-    opacity:0;
-    pointer-events:none;
-  }
-  #splash .splash-stripes{
-    position:absolute;
-    top:0;left:0;right:0;
-    height:6px;
-    background:repeating-linear-gradient(45deg,var(--amber) 0 14px,var(--carbon) 14px 28px);
-  }
-  #splash .splash-title{
-    font-size:28px;
-    font-weight:800;
-    margin:0 0 8px;
-    letter-spacing:-0.01em;
-  }
-  #splash .splash-sub{
-    color:var(--muted);
-    font-size:14px;
-    margin:0 0 28px;
-  }
-  .splash-spinner{
-    width:36px;height:36px;
-    border:3px solid var(--steel);
-    border-top-color:var(--amber);
-    border-radius:50%;
-    animation:spin .8s linear infinite;
-    margin-bottom:18px;
-  }
+  #splash.hide{opacity:0;pointer-events:none;}
+  #splash .splash-stripes{position:absolute;top:0;left:0;right:0;height:6px;background:repeating-linear-gradient(45deg,var(--amber) 0 14px,var(--carbon) 14px 28px);}
+  #splash .splash-title{font-size:28px;font-weight:800;margin:0 0 8px;}
+  #splash .splash-sub{color:var(--muted);font-size:14px;margin:0 0 28px;}
+  .splash-spinner{width:36px;height:36px;border:3px solid var(--steel);border-top-color:var(--amber);border-radius:50%;animation:spin .8s linear infinite;margin-bottom:18px;}
   @keyframes spin{to{transform:rotate(360deg);}}
-  #splash .splash-msg{
-    color:var(--muted);
-    font-size:13px;
-    text-align:center;
-    max-width:300px;
-    line-height:1.5;
-  }
+  #splash .splash-msg{color:var(--muted);font-size:13px;text-align:center;max-width:300px;line-height:1.5;}
   #splash .splash-msg .err{color:var(--miss);margin-top:8px;display:none;}
-
-  .stripes{
-    height:6px;
-    background:repeating-linear-gradient(45deg,var(--amber) 0 14px,var(--carbon) 14px 28px);
-  }
-  header{
-    padding:28px 20px 18px;
-    border-bottom:1px solid var(--steel);
-  }
-  .eyebrow{
-    font-size:12px;
-    letter-spacing:.18em;
-    text-transform:uppercase;
-    color:var(--amber);
-    font-weight:700;
-    margin:0 0 6px;
-  }
-  h1{
-    margin:0;
-    font-size:26px;
-    font-weight:800;
-    letter-spacing:-0.01em;
-  }
-  .sub{
-    color:var(--muted);
-    font-size:14px;
-    margin-top:6px;
-  }
-  .almacen-wrap{
-    max-width:640px;
-    margin:0 auto;
-    padding:16px 18px 0;
-  }
-  .almacen-label{
-    font-size:11px;
-    text-transform:uppercase;
-    letter-spacing:.12em;
-    color:var(--muted);
-    margin-bottom:6px;
-  }
-  #almacen{
-    width:100%;
-    font-size:16px;
-    padding:12px 14px;
-    border-radius:8px;
-    border:2px solid var(--steel);
-    background:var(--panel);
-    color:var(--paper);
-    outline:none;
-    appearance:none;
-    -webkit-appearance:none;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238b8d92' fill='none' stroke-width='2'/%3E%3C/svg%3E");
-    background-repeat:no-repeat;
-    background-position:right 14px center;
-    cursor:pointer;
-  }
+  .stripes{height:6px;background:repeating-linear-gradient(45deg,var(--amber) 0 14px,var(--carbon) 14px 28px);}
+  header{padding:28px 20px 18px;border-bottom:1px solid var(--steel);}
+  .eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--amber);font-weight:700;margin:0 0 6px;}
+  h1{margin:0;font-size:26px;font-weight:800;}
+  .sub{color:var(--muted);font-size:14px;margin-top:6px;}
+  .almacen-wrap{max-width:640px;margin:0 auto;padding:16px 18px 0;}
+  .almacen-label{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin-bottom:6px;}
+  #almacen{width:100%;font-size:16px;padding:12px 14px;border-radius:8px;border:2px solid var(--steel);background:var(--panel);color:var(--paper);outline:none;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238b8d92' fill='none' stroke-width='2'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;cursor:pointer;}
   #almacen:focus{border-color:var(--amber)}
-  main{
-    max-width:640px;
-    margin:0 auto;
-    padding:22px 18px 60px;
-  }
-  .search-wrap{
-    position:relative;
-    margin-bottom:22px;
-  }
-  #q{
-    width:100%;
-    font-size:19px;
-    padding:16px 16px 16px 46px;
-    border-radius:10px;
-    border:2px solid var(--steel);
-    background:var(--panel);
-    color:var(--paper);
-    outline:none;
-    transition:border-color .15s ease;
-  }
-  #q:focus{
-    border-color:var(--amber);
-  }
-  .search-wrap::before{
-    content:"";
-    position:absolute;
-    left:16px;
-    top:50%;
-    width:16px;
-    height:16px;
-    transform:translateY(-50%);
-    border:2px solid var(--muted);
-    border-radius:50%;
-    box-shadow:6px 6px 0 -3px var(--muted);
-  }
-  #q:focus ~ .scanline{
-    opacity:1;
-  }
-  .status{
-    font-size:13px;
-    color:var(--muted);
-    min-height:18px;
-    margin-bottom:14px;
-  }
-  .pagination{
-    display:flex;
-    justify-content:center;
-    align-items:center;
-    gap:16px;
-    margin-top:20px;
-    padding:14px 0;
-  }
-  .pag-btn{
-    background:var(--panel);
-    color:var(--paper);
-    border:1px solid var(--steel);
-    border-radius:6px;
-    padding:8px 18px;
-    font-size:14px;
-    cursor:pointer;
-    transition:all .15s ease;
-    font-family:inherit;
-  }
-  .pag-btn:hover:not([disabled]){
-    border-color:var(--amber);
-    color:var(--amber);
-  }
-  .pag-btn[disabled]{
-    opacity:.35;
-    cursor:not-allowed;
-  }
-  .pag-info{
-    font-size:13px;
-    color:var(--muted);
-    min-width:60px;
-    text-align:center;
-  }
-  .card{
-    background:var(--panel);
-    border:1px solid var(--steel);
-    border-left:5px solid var(--amber);
-    border-radius:8px;
-    padding:14px 16px;
-    margin-bottom:12px;
-  }
-  .card .cod{
-    font-family:"SF Mono",Consolas,Menlo,monospace;
-    font-size:13px;
-    color:var(--amber);
-    letter-spacing:.03em;
-  }
-  .card .desc{
-    font-size:16px;
-    font-weight:600;
-    margin:2px 0 10px;
-  }
-  .meta{
-    display:flex;
-    gap:18px;
-    flex-wrap:wrap;
-    font-size:14px;
-  }
-  .meta div span{
-    display:block;
-    font-size:11px;
-    color:var(--muted);
-    text-transform:uppercase;
-    letter-spacing:.06em;
-  }
-  .meta .ubic{
-    color:var(--ok);
-    font-weight:700;
-    font-size:16px;
-  }
-  .empty, .hint{
-    color:var(--muted);
-    font-size:14px;
-    padding:20px 4px;
-    text-align:center;
-  }
-  .err{
-    color:var(--miss);
-  }
-  footer{
-    text-align:center;
-    color:var(--muted);
-    font-size:12px;
-    padding-bottom:30px;
-  }
-  .help-btn{
-    position:fixed;
-    bottom:22px;
-    right:22px;
-    width:50px;
-    height:50px;
-    border-radius:50%;
-    background:var(--amber);
-    color:var(--carbon);
-    border:none;
-    font-size:22px;
-    font-weight:800;
-    cursor:pointer;
-    box-shadow:0 4px 16px rgba(0,0,0,.4);
-    z-index:100;
-    transition:transform .15s ease;
-  }
+  main{max-width:640px;margin:0 auto;padding:22px 18px 60px;}
+  .search-wrap{position:relative;margin-bottom:22px;}
+  #q{width:100%;font-size:19px;padding:16px 16px 16px 46px;border-radius:10px;border:2px solid var(--steel);background:var(--panel);color:var(--paper);outline:none;transition:border-color .15s ease;}
+  #q:focus{border-color:var(--amber);}
+  .search-wrap::before{content:"";position:absolute;left:16px;top:50%;width:16px;height:16px;transform:translateY(-50%);border:2px solid var(--muted);border-radius:50%;box-shadow:6px 6px 0 -3px var(--muted);}
+  .status{font-size:13px;color:var(--muted);min-height:18px;margin-bottom:14px;}
+  .pagination{display:flex;justify-content:center;align-items:center;gap:16px;margin-top:20px;padding:14px 0;}
+  .pag-btn{background:var(--panel);color:var(--paper);border:1px solid var(--steel);border-radius:6px;padding:8px 18px;font-size:14px;cursor:pointer;transition:all .15s ease;font-family:inherit;}
+  .pag-btn:hover:not([disabled]){border-color:var(--amber);color:var(--amber);}
+  .pag-btn[disabled]{opacity:.35;cursor:not-allowed;}
+  .pag-info{font-size:13px;color:var(--muted);min-width:60px;text-align:center;}
+  .card{background:var(--panel);border:1px solid var(--steel);border-left:5px solid var(--amber);border-radius:8px;padding:14px 16px;margin-bottom:12px;}
+  .card .cod{font-family:"SF Mono",Consolas,Menlo,monospace;font-size:13px;color:var(--amber);letter-spacing:.03em;}
+  .card .desc{font-size:16px;font-weight:600;margin:2px 0 10px;}
+  .meta{display:flex;gap:18px;flex-wrap:wrap;font-size:14px;}
+  .meta div span{display:block;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;}
+  .meta .ubic{color:var(--ok);font-weight:700;font-size:16px;}
+  .empty,.hint{color:var(--muted);font-size:14px;padding:20px 4px;text-align:center;}
+  .err{color:var(--miss);}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding-bottom:30px;}
+  .help-btn{position:fixed;bottom:22px;right:22px;width:50px;height:50px;border-radius:50%;background:var(--amber);color:var(--carbon);border:none;font-size:22px;font-weight:800;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.4);z-index:100;transition:transform .15s ease;}
   .help-btn:hover{transform:scale(1.08);}
-  .modal-overlay{
-    display:none;
-    position:fixed;
-    inset:0;
-    background:rgba(0,0,0,.65);
-    z-index:200;
-    justify-content:center;
-    align-items:center;
-    padding:18px;
-  }
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:200;justify-content:center;align-items:center;padding:18px;}
   .modal-overlay.active{display:flex;}
-  .modal{
-    background:var(--panel);
-    border:1px solid var(--steel);
-    border-radius:12px;
-    max-width:480px;
-    width:100%;
-    max-height:85vh;
-    overflow-y:auto;
-    padding:28px 24px;
-  }
-  .modal h2{
-    margin:0 0 16px;
-    font-size:20px;
-    color:var(--amber);
-  }
-  .modal h3{
-    margin:18px 0 8px;
-    font-size:15px;
-    color:var(--paper);
-  }
-  .modal p, .modal li{
-    font-size:14px;
-    color:var(--muted);
-    line-height:1.6;
-    margin:0 0 10px;
-  }
-  .modal ul{
-    padding-left:20px;
-    margin:0 0 10px;
-  }
+  .modal{background:var(--panel);border:1px solid var(--steel);border-radius:12px;max-width:480px;width:100%;max-height:85vh;overflow-y:auto;padding:28px 24px;}
+  .modal h2{margin:0 0 16px;font-size:20px;color:var(--amber);}
+  .modal h3{margin:18px 0 8px;font-size:15px;color:var(--paper);}
+  .modal p,.modal li{font-size:14px;color:var(--muted);line-height:1.6;margin:0 0 10px;}
+  .modal ul{padding-left:20px;margin:0 0 10px;}
   .modal li{margin-bottom:6px;}
-  .modal .close-btn{
-    display:block;
-    width:100%;
-    padding:12px;
-    margin-top:18px;
-    background:var(--steel);
-    color:var(--paper);
-    border:none;
-    border-radius:8px;
-    font-size:15px;
-    font-weight:600;
-    cursor:pointer;
-  }
+  .modal .close-btn{display:block;width:100%;padding:12px;margin-top:18px;background:var(--steel);color:var(--paper);border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;}
   .modal .close-btn:hover{background:var(--amber);color:var(--carbon);}
 </style>
 </head>
 <body>
-
-  <!-- SPLASH: se muestra mientras Render despierta -->
   <div id="splash">
     <div class="splash-stripes"></div>
     <div class="splash-spinner"></div>
     <p class="splash-title">Ubica</p>
-    <p class="splash-sub">Almacen Mercedes</p>
-    <p class="splash-msg">
-      Preparando el sistema...<br>esto puede tardar unos segundos.
-      <span class="err" id="splashErr"></span>
-    </p>
+    <p class="splash-sub">Consulta de inventario</p>
+    <p class="splash-msg">Preparando el sistema...<span class="err" id="splashErr"></span></p>
   </div>
-
   <div class="stripes"></div>
   <header>
     <p class="eyebrow">Consulta rápida de inventario</p>
@@ -447,96 +181,57 @@ PAGINA = """
   </header>
   <div class="almacen-wrap">
     <div class="almacen-label">Almacén</div>
-    <select id="almacen">
-      <option value="">Cargando almacenes...</option>
-    </select>
+    <select id="almacen"><option value="">Cargando almacenes...</option></select>
   </div>
   <main>
     <div class="search-wrap">
       <input id="q" type="text" placeholder="Ej. tornillo 1/4 o MF-1234" autofocus autocomplete="off">
     </div>
     <div class="status" id="status"></div>
-    <div id="resultados">
-      <p class="hint">Los resultados aparecerán aquí mientras escribes.</p>
-    </div>
+    <div id="resultados"><p class="hint">Los resultados aparecerán aquí mientras escribes.</p></div>
   </main>
   <footer>Datos según el último export de BOSS · <span id="fechaExport">cargando...</span></footer>
-
   <button class="help-btn" id="helpBtn" title="Ayuda">?</button>
-
   <div class="modal-overlay" id="modal">
     <div class="modal">
       <h2>Cómo usar Ubica</h2>
-
       <h3>Seleccionar tu almacén</h3>
       <p>Elige tu almacén en el menú desplegable. Solo verás los artículos de tu almacén.</p>
-
       <h3>Buscar un artículo</h3>
-      <p>Escribe en el buscador el código (ej. <strong>MF000765</strong>) o el nombre del artículo (ej. <strong>tornillo</strong>). Los resultados se muestran mientras escribes.</p>
+      <p>Escribe en el buscador el código o nombre. Los resultados se muestran mientras escribes.</p>
       <ul>
         <li>Puedes buscar por código, descripción o parte del nombre.</li>
-        <li>No importa si escribes en mayúsculas o minúsculas.</li>
-        <li>La <strong>ubicación</strong> que aparece en verde es donde debes buscar el artículo.</li>
+        <li>No importa mayúsculas o minúsculas.</li>
+        <li>La <strong>ubicación</strong> en verde es donde buscar.</li>
       </ul>
-
-      <h3>Mantener las existencias actualizadas</h3>
-      <p>Los datos se actualizan automáticamente. Solo necesitas:</p>
-      <ul>
-        <li>Abre el <strong>BOSS Sync</strong> en tu navegador.</li>
-        <li>Sube tu export de inventario (.xlsx).</li>
-        <li>La web se actualiza en unos segundos.</li>
-      </ul>
-
+      <h3>Mantener actualizado</h3>
+      <p>Cada almacén ejecuta el monitor en su PC. Exportás desde BOSS, el monitor lo sube solo.</p>
       <button class="close-btn" id="closeModal">Entendido</button>
     </div>
   </div>
-
 <script>
 const splash = document.getElementById('splash');
 const splashErr = document.getElementById('splashErr');
 
 async function esperarServidor(){
-  const maxIntentos = 30;
-  const intervalo = 1500;
-  for(let i = 0; i < maxIntentos; i++){
-    try{
-      const r = await fetch('/api/health', {signal: AbortSignal.timeout(3000)});
-      if(r.ok) return true;
-    }catch(e){}
-    let splashMsg = i < 5 ? 'Preparando el sistema...' :
-                i < 15 ? 'Render esta despertando, espera...' :
-                          'Casi listo, un momento mas...';
-    document.querySelector('.splash-msg').innerHTML = splashMsg +
-      '<span class="err" id="splashErr"></span>';
-    await new Promise(ok => setTimeout(ok, intervalo));
+  for(let i = 0; i < 30; i++){
+    try{ const r = await fetch('/api/health', {signal: AbortSignal.timeout(3000)}); if(r.ok) return true; }catch(e){}
+    document.querySelector('.splash-msg').innerHTML = (i < 10 ? 'Preparando el sistema...' : 'Casi listo...') + '<span class="err" id="splashErr"></span>';
+    await new Promise(ok => setTimeout(ok, 1500));
   }
   return false;
 }
 
 (async function(){
-  const startTime = Date.now();
+  const t0 = Date.now();
   const ok = await esperarServidor();
-  if(!ok){
-    splashErr.style.display = 'block';
-    splashErr.textContent = 'El servidor tardo demasiado. Refresca la pagina.';
-    return;
-  }
-  const elapsed = Date.now() - startTime;
-  const minSplash = 4000;
-  const wait = elapsed < minSplash ? minSplash - elapsed : 0;
+  if(!ok){ splashErr.style.display='block'; splashErr.textContent='El servidor tardo demasiado.'; return; }
+  const wait = Math.max(0, 3000 - (Date.now() - t0));
   await new Promise(ok => setTimeout(ok, wait));
   splash.classList.add('hide');
   setTimeout(() => splash.remove(), 500);
   cargarAlmacenes();
-  cargarFecha();
 })();
-
-async function cargarFecha(){
-  try{
-    const r = await fetch('/api/health');
-    document.getElementById('fechaExport').textContent = new Date().toLocaleDateString('es-AR');
-  }catch(e){}
-}
 
 const input = document.getElementById('q');
 const resultados = document.getElementById('resultados');
@@ -551,18 +246,14 @@ async function cargarAlmacenes(){
     const r = await fetch('/api/almacenes');
     const d = await r.json();
     if(d.almacenes && d.almacenes.length){
-      almacenSelect.innerHTML = d.almacenes.map(a =>
-        '<option value="'+a+'">'+a+'</option>'
-      ).join('');
+      almacenSelect.innerHTML = d.almacenes.map(a => '<option value="'+a+'">'+a+'</option>').join('');
       const saved = localStorage.getItem('ubica_almacen');
-      if(saved && d.almacenes.includes(saved)){
-        almacenSelect.value = saved;
-      }
+      if(saved && d.almacenes.includes(saved)) almacenSelect.value = saved;
     } else {
       almacenSelect.innerHTML = '<option value="">Sin almacenes disponibles</option>';
     }
   }catch(e){
-    almacenSelect.innerHTML = '<option value="">Error cargando almacenes</option>';
+    almacenSelect.innerHTML = '<option value="">Error cargando</option>';
   }
 }
 
@@ -576,11 +267,7 @@ input.addEventListener('input', () => {
   clearTimeout(timer);
   currentPage = 1;
   const q = input.value.trim();
-  if(!q){
-    resultados.innerHTML = '<p class="hint">Los resultados aparecerán aquí mientras escribes.</p>';
-    status.textContent = '';
-    return;
-  }
+  if(!q){ resultados.innerHTML = '<p class="hint">Los resultados aparecerán aquí mientras escribes.</p>'; status.textContent = ''; return; }
   status.textContent = 'Buscando...';
   timer = setTimeout(() => buscar(q, 1), 300);
 });
@@ -591,57 +278,27 @@ async function buscar(q, page){
     const almacen = almacenSelect.value;
     const res = await fetch('/api/buscar?q=' + encodeURIComponent(q) + '&page=' + page + '&almacen=' + encodeURIComponent(almacen));
     const data = await res.json();
-    if(data.error){
-      status.textContent = '';
-      resultados.innerHTML = '<p class="empty err">' + data.error + '</p>';
-      return;
-    }
+    if(data.error){ status.textContent=''; resultados.innerHTML='<p class="empty err">'+data.error+'</p>'; return; }
     const items = data.resultados;
-    if(items.length === 0){
-      status.textContent = '';
-      resultados.innerHTML = '<p class="empty">No encontré nada para "' + q + '"</p>';
-      return;
-    }
+    if(!items.length){ status.textContent=''; resultados.innerHTML='<p class="empty">No encontré nada para "'+q+'"</p>'; return; }
     currentPage = data.page;
     currentQ = q;
     status.textContent = data.paginas > 1
-      ? 'Mostrando ' + items.length + ' de ' + data.total + ' resultados (página ' + data.page + '/' + data.paginas + ')'
+      ? items.length+' de '+data.total+' resultados (página '+data.page+'/'+data.paginas+')'
       : items.length + ' resultado(s)';
-    let html = items.map(it => `
-      <div class="card">
-        <div class="cod">${it.codigo}</div>
-        <div class="desc">${it.descripcion}</div>
-        <div class="meta">
-          <div><span>Ubicación</span><div class="ubic">${it.ubicacion || 'N/D'}</div></div>
-          ${it.cantidad !== null ? `<div><span>Cantidad</span><div>${it.cantidad}</div></div>` : ''}
-        </div>
-      </div>
-    `).join('');
+    let html = items.map(it => '<div class="card"><div class="cod">'+it.codigo+'</div><div class="desc">'+it.descripcion+'</div><div class="meta"><div><span>Ubicación</span><div class="ubic">'+(it.ubicacion||'N/D')+'</div></div>'+(it.cantidad?'<div><span>Cantidad</span><div>'+it.cantidad+'</div></div>':'')+'</div></div>').join('');
     if(data.paginas > 1){
-      html += '<div class="pagination">';
-      html += '<button class="pag-btn" onclick="irPagina(' + (currentPage - 1) + ')"' + (currentPage <= 1 ? ' disabled' : '') + '>&#9664; Anterior</button>';
-      html += '<span class="pag-info">' + currentPage + ' / ' + data.paginas + '</span>';
-      html += '<button class="pag-btn" onclick="irPagina(' + (currentPage + 1) + ')"' + (currentPage >= data.paginas ? ' disabled' : '') + '>Siguiente &#9654;</button>';
-      html += '</div>';
+      html += '<div class="pagination"><button class="pag-btn" onclick="irPagina('+(currentPage-1)+')"'+(currentPage<=1?' disabled':'')+'>&#9664; Anterior</button><span class="pag-info">'+currentPage+' / '+data.paginas+'</span><button class="pag-btn" onclick="irPagina('+(currentPage+1)+')"'+(currentPage>=data.paginas?' disabled':'')+'>Siguiente &#9654;</button></div>';
     }
     resultados.innerHTML = html;
-  }catch(e){
-    status.textContent = '';
-    resultados.innerHTML = '<p class="empty err">Error de conexión con el servidor.</p>';
-  }
+  }catch(e){ status.textContent=''; resultados.innerHTML='<p class="empty err">Error de conexión.</p>'; }
 }
 
-function irPagina(page){
-  buscar(currentQ, page);
-  resultados.scrollIntoView({behavior:'smooth', block:'start'});
-}
+function irPagina(page){ buscar(currentQ, page); resultados.scrollIntoView({behavior:'smooth', block:'start'}); }
 
-const helpBtn = document.getElementById('helpBtn');
-const modal = document.getElementById('modal');
-const closeModal = document.getElementById('closeModal');
-helpBtn.addEventListener('click', () => modal.classList.add('active'));
-closeModal.addEventListener('click', () => modal.classList.remove('active'));
-modal.addEventListener('click', e => { if(e.target === modal) modal.classList.remove('active'); });
+document.getElementById('helpBtn').addEventListener('click', () => document.getElementById('modal').classList.add('active'));
+document.getElementById('closeModal').addEventListener('click', () => document.getElementById('modal').classList.remove('active'));
+document.getElementById('modal').addEventListener('click', e => { if(e.target.id==='modal') e.target.classList.remove('active'); });
 </script>
 </body>
 </html>
@@ -650,7 +307,7 @@ modal.addEventListener('click', e => { if(e.target === modal) modal.classList.re
 
 @app.route("/")
 def index():
-    return render_template_string(PAGINA, fecha_export="")
+    return render_template_string(PAGINA)
 
 
 @app.route("/api/health")
@@ -660,15 +317,7 @@ def api_health():
 
 @app.route("/api/almacenes")
 def api_almacenes():
-    try:
-        df = cargar_inventario()
-    except Exception:
-        return jsonify({"almacenes": []})
-    if COL_ALMACEN not in df.columns:
-        return jsonify({"almacenes": []})
-    almacenes = sorted(df[COL_ALMACEN].dropna().unique().tolist())
-    almacenes = [a.strip() for a in almacenes if a.strip()]
-    return jsonify({"almacenes": almacenes})
+    return jsonify({"almacenes": get_almacenes()})
 
 
 @app.route("/api/buscar")
@@ -677,19 +326,19 @@ def api_buscar():
     almacen = request.args.get("almacen", "").strip()
     if not consulta:
         return jsonify({"resultados": [], "total": 0})
+    if not almacen:
+        almacenes = get_almacenes()
+        if almacenes:
+            almacen = almacenes[0]
+        else:
+            return jsonify({"error": "No hay almacenes disponibles"})
 
-    try:
-        df = cargar_inventario()
-    except FileNotFoundError:
-        return jsonify({"error": "No encuentro el archivo de inventario. Avisa al admin."})
-    except Exception as e:
-        return jsonify({"error": f"Error leyendo el inventario: {e}"})
+    df = get_dataframe(almacen)
+    if df.empty:
+        return jsonify({"error": "No hay datos para este almacén"})
 
     if COL_CODIGO not in df.columns or COL_DESCRIPCION not in df.columns:
-        return jsonify({"error": f"Columnas no coinciden. Encontradas: {list(df.columns)}"})
-
-    if almacen and COL_ALMACEN in df.columns:
-        df = df[df[COL_ALMACEN].apply(lambda x: str(x).strip().upper() == almacen.upper())]
+        return jsonify({"error": f"Columnas no encontradas. Disponibles: {list(df.columns)}"})
 
     consulta_norm = normalizar(consulta)
     mask = df[COL_CODIGO].apply(normalizar).str.contains(consulta_norm, na=False) | \
@@ -713,14 +362,7 @@ def api_buscar():
     return jsonify({"resultados": items, "total": total, "page": page, "paginas": max(1, -(-total // MAX_RESULTADOS))})
 
 
-def prefetch():
-    cargar_inventario()
-
-
-threading.Thread(target=prefetch, daemon=True).start()
-
+threading.Thread(target=get_almacenes, daemon=True).start()
 
 if __name__ == "__main__":
-    # host="0.0.0.0" permite que otras personas en la misma red (wifi/cable
-    # de la oficina) accedan desde su celular usando la IP de esta PC.
     app.run(host="0.0.0.0", port=PUERTO, debug=False)
