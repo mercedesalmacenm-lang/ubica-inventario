@@ -22,6 +22,16 @@ COL_CANTIDAD = "existencia"
 MAX_RESULTADOS = 20
 PUERTO = int(os.environ.get("PORT", 8080))
 
+# Claves por almacén: JSON mapping {"clave": "NOMBRE PESTAÑA"}
+# Si está vacío, cualquiera puede ver cualquier almacén (modo admin)
+ALMACEN_KEYS = {}
+_keys_raw = os.environ.get("ALMACEN_KEYS", "")
+if _keys_raw:
+    try:
+        ALMACEN_KEYS = json.loads(_keys_raw)
+    except Exception:
+        pass
+
 app = Flask(__name__)
 
 def get_credentials():
@@ -181,6 +191,7 @@ PAGINA = """
   </header>
   <div class="almacen-wrap">
     <div class="almacen-label">Almacén</div>
+    <div class="almacen-fijo" id="almacenFijo" style="display:none"></div>
     <select id="almacen"><option value="">Cargando almacenes...</option></select>
   </div>
   <main>
@@ -210,6 +221,7 @@ PAGINA = """
     </div>
   </div>
 <script>
+const ALMACEN_FIJO = {{ almacen_fijo_js }};
 const splash = document.getElementById('splash');
 const splashErr = document.getElementById('splashErr');
 
@@ -230,7 +242,15 @@ async function esperarServidor(){
   await new Promise(ok => setTimeout(ok, wait));
   splash.classList.add('hide');
   setTimeout(() => splash.remove(), 500);
-  cargarAlmacenes();
+
+  if(ALMACEN_FIJO){
+    document.getElementById('almacenFijo').textContent = ALMACEN_FIJO;
+    document.getElementById('almacenFijo').style.display = 'block';
+    document.getElementById('almacen').style.display = 'none';
+    document.querySelector('.almacen-label').textContent = 'Tu almacén';
+  } else {
+    cargarAlmacenes();
+  }
 })();
 
 const input = document.getElementById('q');
@@ -240,6 +260,10 @@ const almacenSelect = document.getElementById('almacen');
 let timer = null;
 let currentPage = 1;
 let currentQ = '';
+
+function getAlmacen(){
+  return ALMACEN_FIJO || almacenSelect.value;
+}
 
 async function cargarAlmacenes(){
   try{
@@ -275,7 +299,7 @@ input.addEventListener('input', () => {
 async function buscar(q, page){
   page = page || 1;
   try{
-    const almacen = almacenSelect.value;
+    const almacen = getAlmacen();
     const res = await fetch('/api/buscar?q=' + encodeURIComponent(q) + '&page=' + page + '&almacen=' + encodeURIComponent(almacen));
     const data = await res.json();
     if(data.error){ status.textContent=''; resultados.innerHTML='<p class="empty err">'+data.error+'</p>'; return; }
@@ -307,12 +331,26 @@ document.getElementById('modal').addEventListener('click', e => { if(e.target.id
 
 @app.route("/")
 def index():
-    return render_template_string(PAGINA)
+    clave = request.args.get("k", "").strip()
+    almacen_fijo = ""
+    if clave and clave in ALMACEN_KEYS:
+        almacen_fijo = ALMACEN_KEYS[clave]
+    almacen_fijo_js = json.dumps(almacen_fijo) if almacen_fijo else '""'
+    sub_text = "Busca el artículo de tu almacén" if almacen_fijo else "Selecciona tu almacén y busca el artículo"
+    return render_template_string(PAGINA, almacen_fijo_js=almacen_fijo_js, sub_text=sub_text)
 
 
 @app.route("/api/health")
 def api_health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/api/validate-key")
+def api_validate_key():
+    clave = request.args.get("k", "").strip()
+    if clave and clave in ALMACEN_KEYS:
+        return jsonify({"valid": True, "almacen": ALMACEN_KEYS[clave]})
+    return jsonify({"valid": False})
 
 
 @app.route("/api/almacenes")
