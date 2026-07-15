@@ -32,6 +32,8 @@ if _keys_raw:
     except Exception:
         pass
 
+ALMACEN_PINS = {"mercedes": "2703", "bolivar": "0611"}
+
 app = Flask(__name__)
 
 def get_credentials():
@@ -54,7 +56,7 @@ def normalizar(texto):
 
 _cache = {"almacenes": None, "ts": 0}
 _cache_ws = {}
-TTL = 300
+TTL = 60
 
 def get_almacenes():
     now = time.time()
@@ -83,7 +85,16 @@ def get_dataframe(almacen):
         data = ws.get_all_values()
         if not data:
             return pd.DataFrame()
-        df = pd.DataFrame(data[1:], columns=[normalizar(c) for c in data[0]])
+        header_idx = None
+        for idx, row in enumerate(data[:10]):
+            vals = [normalizar(str(c)) for c in row]
+            if any("almacen" in v for v in vals):
+                header_idx = idx
+                break
+        if header_idx is None:
+            header_idx = 0
+        headers = [normalizar(str(c)) for c in data[header_idx]]
+        df = pd.DataFrame(data[header_idx+1:], columns=headers)
         df = df.fillna("")
         _cache_ws[almacen] = {"df": df, "ts": now}
         return df
@@ -118,20 +129,7 @@ PAGINA = """
     font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
     min-height:100vh;
   }
-  #splash{
-    position:fixed;inset:0;z-index:9999;
-    background:var(--carbon);
-    display:flex;flex-direction:column;align-items:center;justify-content:center;
-    transition:opacity .4s ease;
-  }
-  #splash.hide{opacity:0;pointer-events:none;}
-  #splash .splash-stripes{position:absolute;top:0;left:0;right:0;height:6px;background:repeating-linear-gradient(45deg,var(--amber) 0 14px,var(--carbon) 14px 28px);}
-  #splash .splash-title{font-size:28px;font-weight:800;margin:0 0 8px;}
-  #splash .splash-sub{color:var(--muted);font-size:14px;margin:0 0 28px;}
-  .splash-spinner{width:36px;height:36px;border:3px solid var(--steel);border-top-color:var(--amber);border-radius:50%;animation:spin .8s linear infinite;margin-bottom:18px;}
-  @keyframes spin{to{transform:rotate(360deg);}}
-  #splash .splash-msg{color:var(--muted);font-size:13px;text-align:center;max-width:300px;line-height:1.5;}
-  #splash .splash-msg .err{color:var(--miss);margin-top:8px;display:none;}
+
   .stripes{height:6px;background:repeating-linear-gradient(45deg,var(--amber) 0 14px,var(--carbon) 14px 28px);}
   header{padding:28px 20px 18px;border-bottom:1px solid var(--steel);}
   .eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--amber);font-weight:700;margin:0 0 6px;}
@@ -173,21 +171,44 @@ PAGINA = """
   .modal li{margin-bottom:6px;}
   .modal .close-btn{display:block;width:100%;padding:12px;margin-top:18px;background:var(--steel);color:var(--paper);border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;}
   .modal .close-btn:hover{background:var(--amber);color:var(--carbon);}
+  .pin-overlay{position:fixed;inset:0;z-index:300;background:var(--carbon);display:flex;align-items:center;justify-content:center;padding:18px;}
+  .pin-overlay.hidden{display:none;}
+  .pin-box{background:var(--panel);border:1px solid var(--steel);border-radius:12px;max-width:360px;width:100%;padding:32px 24px;text-align:center;}
+  .pin-box h2{margin:0 0 6px;font-size:20px;color:var(--amber);}
+  .pin-box p{color:var(--muted);font-size:14px;margin:0 0 20px;}
+  .pin-box .pin-almacen{font-size:16px;font-weight:700;color:var(--paper);margin-bottom:16px;}
+  .pin-inputs{display:flex;gap:10px;justify-content:center;margin-bottom:20px;}
+  .pin-inputs input{width:48px;height:56px;text-align:center;font-size:24px;font-weight:700;border:2px solid var(--steel);border-radius:8px;background:var(--panel);color:var(--paper);outline:none;transition:border-color .15s ease;}
+  .pin-inputs input:focus{border-color:var(--amber);}
+  .pin-btn{width:100%;padding:14px;font-size:16px;font-weight:700;background:var(--amber);color:var(--carbon);border:none;border-radius:8px;cursor:pointer;transition:opacity .15s ease;}
+  .pin-btn:hover{opacity:.85;}
+  .pin-btn:disabled{opacity:.4;cursor:not-allowed;}
+  .pin-error{color:var(--miss);font-size:13px;margin-top:10px;display:none;}
 </style>
 </head>
 <body>
-  <div id="splash">
-    <div class="splash-stripes"></div>
-    <div class="splash-spinner"></div>
-    <p class="splash-title">Ubica</p>
-    <p class="splash-sub">Consulta de inventario</p>
-    <p class="splash-msg">Preparando el sistema...<span class="err" id="splashErr"></span></p>
+
+  <div class="pin-overlay" id="pinOverlay" style="display:none">
+    <div class="pin-box">
+      <h2>Ubica</h2>
+      <p>Ingresá el código de acceso</p>
+      <div class="pin-almacen" id="pinAlmacen"></div>
+      <div class="pin-inputs">
+        <input type="tel" maxlength="1" class="pin-digit" id="pd1" inputmode="numeric" autocomplete="off">
+        <input type="tel" maxlength="1" class="pin-digit" id="pd2" inputmode="numeric" autocomplete="off">
+        <input type="tel" maxlength="1" class="pin-digit" id="pd3" inputmode="numeric" autocomplete="off">
+        <input type="tel" maxlength="1" class="pin-digit" id="pd4" inputmode="numeric" autocomplete="off">
+      </div>
+      <button class="pin-btn" id="pinBtn" disabled>Entrar</button>
+      <div class="pin-error" id="pinError">Código incorrecto</div>
+    </div>
   </div>
+
   <div class="stripes"></div>
   <header>
     <p class="eyebrow">Consulta rápida de inventario</p>
     <h1>¿Dónde está?</h1>
-    <p class="sub">Selecciona tu almacén y busca el artículo</p>
+    <p class="sub">{{ sub_text }}</p>
   </header>
   <div class="almacen-wrap">
     <div class="almacen-label">Almacén</div>
@@ -206,8 +227,6 @@ PAGINA = """
   <div class="modal-overlay" id="modal">
     <div class="modal">
       <h2>Cómo usar Ubica</h2>
-      <h3>Seleccionar tu almacén</h3>
-      <p>Elige tu almacén en el menú desplegable. Solo verás los artículos de tu almacén.</p>
       <h3>Buscar un artículo</h3>
       <p>Escribe en el buscador el código o nombre. Los resultados se muestran mientras escribes.</p>
       <ul>
@@ -221,34 +240,104 @@ PAGINA = """
     </div>
   </div>
 <script>
-const ALMACEN_FIJO = {{ almacen_fijo_js }};
-const splash = document.getElementById('splash');
+const ALMACEN_FIJO = {{ almacen_fijo_js | safe }};
 
-function ocultarSplash(){
-  splash.classList.add('hide');
-  setTimeout(() => splash.remove(), 500);
+(function(){
+  if(ALMACEN_FIJO){
+    const pinKey = 'ubica_pin_' + ALMACEN_FIJO;
+    const savedPin = localStorage.getItem(pinKey);
+    if(savedPin){
+      iniciarApp();
+    } else {
+      mostrarPantallaPIN();
+    }
+  } else {
+    iniciarApp();
+  }
+})();
+
+function iniciarApp(){
+  document.getElementById('pinOverlay').style.display = 'none';
   if(ALMACEN_FIJO){
     document.getElementById('almacenFijo').textContent = ALMACEN_FIJO;
     document.getElementById('almacenFijo').style.display = 'block';
     document.getElementById('almacen').style.display = 'none';
     document.querySelector('.almacen-label').textContent = 'Tu almacén';
+    cargarFecha(ALMACEN_FIJO);
   } else {
     cargarAlmacenes();
   }
 }
 
-async function esperarServidor(){
-  for(let i = 0; i < 40; i++){
-    try{ const r = await fetch('/api/health', {signal: AbortSignal.timeout(5000)}); if(r.ok) return true; }catch(e){}
-    await new Promise(ok => setTimeout(ok, 2000));
-  }
-  return false;
+async function cargarFecha(almacen){
+  try{
+    const r = await fetch('/api/fecha?almacen=' + encodeURIComponent(almacen));
+    const d = await r.json();
+    if(d.fecha) document.getElementById('fechaExport').textContent = d.fecha;
+  }catch(e){}
 }
 
-(async function(){
-  const ok = await esperarServidor();
-  ocultarSplash();
-})();
+function mostrarPantallaPIN(){
+  const overlay = document.getElementById('pinOverlay');
+  overlay.style.display = 'flex';
+  document.getElementById('pinAlmacen').textContent = ALMACEN_FIJO;
+  const digits = document.querySelectorAll('.pin-digit');
+  digits[0].focus();
+  digits.forEach((d, i) => {
+    d.addEventListener('input', () => {
+      if(d.value && i < 3) digits[i+1].focus();
+      checkPin();
+    });
+    d.addEventListener('keydown', (e) => {
+      if(e.key === 'Backspace' && !d.value && i > 0) digits[i-1].focus();
+      if(e.key === 'Enter') submitPin();
+    });
+  });
+}
+
+function checkPin(){
+  const digits = document.querySelectorAll('.pin-digit');
+  const allFilled = Array.from(digits).every(d => d.value.length === 1);
+  document.getElementById('pinBtn').disabled = !allFilled;
+}
+
+async function submitPin(){
+  const digits = document.querySelectorAll('.pin-digit');
+  const pin = Array.from(digits).map(d => d.value).join('');
+  const btn = document.getElementById('pinBtn');
+  btn.disabled = true;
+  btn.textContent = 'Verificando...';
+  try{
+    const r = await fetch('/api/validate-pin', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({k: ALMACEN_FIJO, pin: pin})
+    });
+    const data = await r.json();
+    if(data.valid){
+      localStorage.setItem('ubica_pin_' + ALMACEN_FIJO, pin);
+      iniciarApp();
+    } else {
+      document.getElementById('pinError').style.display = 'block';
+      digits.forEach(d => { d.value = ''; d.style.borderColor = 'var(--miss)'; });
+      setTimeout(() => {
+        document.getElementById('pinError').style.display = 'none';
+        digits.forEach(d => d.style.borderColor = '');
+        digits[0].focus();
+      }, 1500);
+      btn.disabled = false;
+      btn.textContent = 'Entrar';
+    }
+  }catch(e){
+    btn.disabled = false;
+    btn.textContent = 'Entrar';
+    document.getElementById('pinError').textContent = 'Error de conexión';
+    document.getElementById('pinError').style.display = 'block';
+    setTimeout(() => document.getElementById('pinError').style.display = 'none', 2000);
+  }
+}
+
+document.getElementById('pinBtn').addEventListener('click', submitPin);
 
 const input = document.getElementById('q');
 const resultados = document.getElementById('resultados');
@@ -263,23 +352,29 @@ function getAlmacen(){
 }
 
 async function cargarAlmacenes(){
-  try{
-    const r = await fetch('/api/almacenes');
-    const d = await r.json();
-    if(d.almacenes && d.almacenes.length){
-      almacenSelect.innerHTML = d.almacenes.map(a => '<option value="'+a+'">'+a+'</option>').join('');
-      const saved = localStorage.getItem('ubica_almacen');
-      if(saved && d.almacenes.includes(saved)) almacenSelect.value = saved;
-    } else {
-      almacenSelect.innerHTML = '<option value="">Sin almacenes disponibles</option>';
+  for(let intento = 0; intento < 5; intento++){
+    try{
+      const r = await fetch('/api/almacenes');
+      const d = await r.json();
+      if(d.almacenes && d.almacenes.length){
+        almacenSelect.innerHTML = d.almacenes.map(a => '<option value="'+a+'">'+a+'</option>').join('');
+        const saved = localStorage.getItem('ubica_almacen');
+        if(saved && d.almacenes.includes(saved)) almacenSelect.value = saved;
+        return;
+      } else {
+        almacenSelect.innerHTML = '<option value="">Sin almacenes disponibles</option>';
+        return;
+      }
+    }catch(e){
+      await new Promise(ok => setTimeout(ok, 3000));
     }
-  }catch(e){
-    almacenSelect.innerHTML = '<option value="">Error cargando</option>';
   }
+  almacenSelect.innerHTML = '<option value="">Error cargando almacenes</option>';
 }
 
 almacenSelect.addEventListener('change', () => {
   localStorage.setItem('ubica_almacen', almacenSelect.value);
+  if(almacenSelect.value) cargarFecha(almacenSelect.value);
   const q = input.value.trim();
   if(q) buscar(q, 1);
 });
@@ -297,6 +392,7 @@ async function buscar(q, page){
   page = page || 1;
   try{
     const almacen = getAlmacen();
+    status.textContent = 'Buscando...';
     const res = await fetch('/api/buscar?q=' + encodeURIComponent(q) + '&page=' + page + '&almacen=' + encodeURIComponent(almacen));
     const data = await res.json();
     if(data.error){ status.textContent=''; resultados.innerHTML='<p class="empty err">'+data.error+'</p>'; return; }
@@ -312,7 +408,10 @@ async function buscar(q, page){
       html += '<div class="pagination"><button class="pag-btn" onclick="irPagina('+(currentPage-1)+')"'+(currentPage<=1?' disabled':'')+'>&#9664; Anterior</button><span class="pag-info">'+currentPage+' / '+data.paginas+'</span><button class="pag-btn" onclick="irPagina('+(currentPage+1)+')"'+(currentPage>=data.paginas?' disabled':'')+'>Siguiente &#9654;</button></div>';
     }
     resultados.innerHTML = html;
-  }catch(e){ status.textContent=''; resultados.innerHTML='<p class="empty err">Error de conexión.</p>'; }
+  }catch(e){
+    status.textContent = 'Conectando con el servidor...';
+    setTimeout(() => buscar(q, page), 5000);
+  }
 }
 
 function irPagina(page){ buscar(currentQ, page); resultados.scrollIntoView({behavior:'smooth', block:'start'}); }
@@ -342,11 +441,49 @@ def api_health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/fecha")
+def api_fecha():
+    almacen = request.args.get("almacen", "").strip()
+    if not almacen:
+        almacenes = get_almacenes()
+        almacen = almacenes[0] if almacenes else ""
+    if not almacen:
+        return jsonify({"fecha": ""})
+    try:
+        sheet = get_sheet()
+        ws = sheet.worksheet(almacen)
+        data = ws.get_all_values()
+        for i in range(min(5, len(data))):
+            for cell in data[i]:
+                cell = str(cell).strip()
+                if cell and "-" in cell and ":" in cell:
+                    parts = cell.split("-")
+                    if len(parts) >= 2:
+                        return jsonify({"fecha": parts[-1].strip()})
+        return jsonify({"fecha": ""})
+    except Exception as e:
+        print(f"[ERROR] api_fecha: {e}")
+        return jsonify({"fecha": ""})
+
+
 @app.route("/api/validate-key")
 def api_validate_key():
     clave = request.args.get("k", "").strip()
     if clave and clave in ALMACEN_KEYS:
         return jsonify({"valid": True, "almacen": ALMACEN_KEYS[clave]})
+    return jsonify({"valid": False})
+
+
+@app.route("/api/validate-pin", methods=["POST"])
+def api_validate_pin():
+    data = request.get_json()
+    clave = data.get("k", "").strip()
+    pin = data.get("pin", "").strip()
+    if not clave or not pin:
+        return jsonify({"valid": False})
+    expected_pin = ALMACEN_PINS.get(clave.lower(), "")
+    if expected_pin and pin == expected_pin and clave.lower() in ALMACEN_KEYS:
+        return jsonify({"valid": True, "almacen": ALMACEN_KEYS[clave.lower()]})
     return jsonify({"valid": False})
 
 
