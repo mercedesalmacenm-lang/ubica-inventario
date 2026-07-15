@@ -223,26 +223,10 @@ PAGINA = """
 <script>
 const ALMACEN_FIJO = {{ almacen_fijo_js }};
 const splash = document.getElementById('splash');
-const splashErr = document.getElementById('splashErr');
 
-async function esperarServidor(){
-  for(let i = 0; i < 30; i++){
-    try{ const r = await fetch('/api/health', {signal: AbortSignal.timeout(3000)}); if(r.ok) return true; }catch(e){}
-    document.querySelector('.splash-msg').innerHTML = (i < 10 ? 'Preparando el sistema...' : 'Casi listo...') + '<span class="err" id="splashErr"></span>';
-    await new Promise(ok => setTimeout(ok, 1500));
-  }
-  return false;
-}
-
-(async function(){
-  const t0 = Date.now();
-  const ok = await esperarServidor();
-  if(!ok){ splashErr.style.display='block'; splashErr.textContent='El servidor tardo demasiado.'; return; }
-  const wait = Math.max(0, 3000 - (Date.now() - t0));
-  await new Promise(ok => setTimeout(ok, wait));
+function ocultarSplash(){
   splash.classList.add('hide');
   setTimeout(() => splash.remove(), 500);
-
   if(ALMACEN_FIJO){
     document.getElementById('almacenFijo').textContent = ALMACEN_FIJO;
     document.getElementById('almacenFijo').style.display = 'block';
@@ -251,6 +235,19 @@ async function esperarServidor(){
   } else {
     cargarAlmacenes();
   }
+}
+
+async function esperarServidor(){
+  for(let i = 0; i < 40; i++){
+    try{ const r = await fetch('/api/health', {signal: AbortSignal.timeout(5000)}); if(r.ok) return true; }catch(e){}
+    await new Promise(ok => setTimeout(ok, 2000));
+  }
+  return false;
+}
+
+(async function(){
+  const ok = await esperarServidor();
+  ocultarSplash();
 })();
 
 const input = document.getElementById('q');
