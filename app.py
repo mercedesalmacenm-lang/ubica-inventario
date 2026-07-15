@@ -30,7 +30,8 @@ GOOGLE_SHEETS_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?f
 COL_CODIGO = "articulo"
 COL_DESCRIPCION = "descripcion"
 COL_UBICACION = "ubicacion"
-COL_CANTIDAD = "existencia"  # opcional, pon None si no existe
+COL_CANTIDAD = "existencia"
+COL_ALMACEN = "almacen"
 
 # Fila en la que están los encabezados (1 = primera fila, 2 = segunda, etc.)
 # Si tu hoja tiene filas vacías o títulos antes de los encabezados, ajusta esto.
@@ -190,6 +191,35 @@ PAGINA = """
     font-size:14px;
     margin-top:6px;
   }
+  .almacen-wrap{
+    max-width:640px;
+    margin:0 auto;
+    padding:16px 18px 0;
+  }
+  .almacen-label{
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:.12em;
+    color:var(--muted);
+    margin-bottom:6px;
+  }
+  #almacen{
+    width:100%;
+    font-size:16px;
+    padding:12px 14px;
+    border-radius:8px;
+    border:2px solid var(--steel);
+    background:var(--panel);
+    color:var(--paper);
+    outline:none;
+    appearance:none;
+    -webkit-appearance:none;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238b8d92' fill='none' stroke-width='2'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;
+    background-position:right 14px center;
+    cursor:pointer;
+  }
+  #almacen:focus{border-color:var(--amber)}
   main{
     max-width:640px;
     margin:0 auto;
@@ -411,10 +441,16 @@ PAGINA = """
 
   <div class="stripes"></div>
   <header>
-    <p class="eyebrow">Almacén Mercedes · Consulta rápida</p>
+    <p class="eyebrow">Consulta rápida de inventario</p>
     <h1>¿Dónde está?</h1>
-    <p class="sub">Escribe el código o el nombre del artículo</p>
+    <p class="sub">Selecciona tu almacén y busca el artículo</p>
   </header>
+  <div class="almacen-wrap">
+    <div class="almacen-label">Almacén</div>
+    <select id="almacen">
+      <option value="">Cargando almacenes...</option>
+    </select>
+  </div>
   <main>
     <div class="search-wrap">
       <input id="q" type="text" placeholder="Ej. tornillo 1/4 o MF-1234" autofocus autocomplete="off">
@@ -432,6 +468,9 @@ PAGINA = """
     <div class="modal">
       <h2>Cómo usar Ubica</h2>
 
+      <h3>Seleccionar tu almacén</h3>
+      <p>Elige tu almacén en el menú desplegable. Solo verás los artículos de tu almacén.</p>
+
       <h3>Buscar un artículo</h3>
       <p>Escribe en el buscador el código (ej. <strong>MF000765</strong>) o el nombre del artículo (ej. <strong>tornillo</strong>). Los resultados se muestran mientras escribes.</p>
       <ul>
@@ -443,8 +482,8 @@ PAGINA = """
       <h3>Mantener las existencias actualizadas</h3>
       <p>Los datos se actualizan automáticamente. Solo necesitas:</p>
       <ul>
-        <li>Exporta el reporte de inventario desde <strong>BOSS</strong> al Escritorio.</li>
-        <li>Un monitor detecta el archivo y lo sube a Google Sheets solo.</li>
+        <li>Abre el <strong>BOSS Sync</strong> en tu navegador.</li>
+        <li>Sube tu export de inventario (.xlsx).</li>
         <li>La web se actualiza en unos segundos.</li>
       </ul>
 
@@ -488,6 +527,7 @@ async function esperarServidor(){
   await new Promise(ok => setTimeout(ok, wait));
   splash.classList.add('hide');
   setTimeout(() => splash.remove(), 500);
+  cargarAlmacenes();
   cargarFecha();
 })();
 
@@ -501,9 +541,36 @@ async function cargarFecha(){
 const input = document.getElementById('q');
 const resultados = document.getElementById('resultados');
 const status = document.getElementById('status');
+const almacenSelect = document.getElementById('almacen');
 let timer = null;
 let currentPage = 1;
 let currentQ = '';
+
+async function cargarAlmacenes(){
+  try{
+    const r = await fetch('/api/almacenes');
+    const d = await r.json();
+    if(d.almacenes && d.almacenes.length){
+      almacenSelect.innerHTML = d.almacenes.map(a =>
+        '<option value="'+a+'">'+a+'</option>'
+      ).join('');
+      const saved = localStorage.getItem('ubica_almacen');
+      if(saved && d.almacenes.includes(saved)){
+        almacenSelect.value = saved;
+      }
+    } else {
+      almacenSelect.innerHTML = '<option value="">Sin almacenes disponibles</option>';
+    }
+  }catch(e){
+    almacenSelect.innerHTML = '<option value="">Error cargando almacenes</option>';
+  }
+}
+
+almacenSelect.addEventListener('change', () => {
+  localStorage.setItem('ubica_almacen', almacenSelect.value);
+  const q = input.value.trim();
+  if(q) buscar(q, 1);
+});
 
 input.addEventListener('input', () => {
   clearTimeout(timer);
@@ -521,7 +588,8 @@ input.addEventListener('input', () => {
 async function buscar(q, page){
   page = page || 1;
   try{
-    const res = await fetch('/api/buscar?q=' + encodeURIComponent(q) + '&page=' + page);
+    const almacen = almacenSelect.value;
+    const res = await fetch('/api/buscar?q=' + encodeURIComponent(q) + '&page=' + page + '&almacen=' + encodeURIComponent(almacen));
     const data = await res.json();
     if(data.error){
       status.textContent = '';
@@ -590,9 +658,23 @@ def api_health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/almacenes")
+def api_almacenes():
+    try:
+        df = cargar_inventario()
+    except Exception:
+        return jsonify({"almacenes": []})
+    if COL_ALMACEN not in df.columns:
+        return jsonify({"almacenes": []})
+    almacenes = sorted(df[COL_ALMACEN].dropna().unique().tolist())
+    almacenes = [a.strip() for a in almacenes if a.strip()]
+    return jsonify({"almacenes": almacenes})
+
+
 @app.route("/api/buscar")
 def api_buscar():
     consulta = request.args.get("q", "").strip()
+    almacen = request.args.get("almacen", "").strip()
     if not consulta:
         return jsonify({"resultados": [], "total": 0})
 
@@ -605,6 +687,9 @@ def api_buscar():
 
     if COL_CODIGO not in df.columns or COL_DESCRIPCION not in df.columns:
         return jsonify({"error": f"Columnas no coinciden. Encontradas: {list(df.columns)}"})
+
+    if almacen and COL_ALMACEN in df.columns:
+        df = df[df[COL_ALMACEN].apply(lambda x: str(x).strip().upper() == almacen.upper())]
 
     consulta_norm = normalizar(consulta)
     mask = df[COL_CODIGO].apply(normalizar).str.contains(consulta_norm, na=False) | \
