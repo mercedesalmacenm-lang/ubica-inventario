@@ -411,14 +411,27 @@ almacenSelect.addEventListener('change', () => {
 
 document.getElementById('ubic').addEventListener('change', () => {
   const q = input.value.trim();
-  if(q) buscar(q, 1);
+  buscar(q, 1);
+  if(!q){
+    status.textContent = 'Mostrando artículos de la ubicación seleccionada...';
+  }
 });
 
 input.addEventListener('input', () => {
   clearTimeout(timer);
   currentPage = 1;
   const q = input.value.trim();
-  if(!q){ resultados.innerHTML = '<p class="hint">Los resultados aparecerán aquí mientras escribes.</p>'; status.textContent = ''; return; }
+  if(!q){
+    const ubic = document.getElementById('ubic').value;
+    if(ubic){
+      status.textContent = 'Mostrando artículos de la ubicación seleccionada...';
+      timer = setTimeout(() => buscar(q, 1), 300);
+    } else {
+      resultados.innerHTML = '<p class="hint">Los resultados aparecerán aquí mientras escribes.</p>';
+      status.textContent = '';
+    }
+    return;
+  }
   status.textContent = 'Buscando...';
   timer = setTimeout(() => buscar(q, 1), 300);
 });
@@ -545,7 +558,7 @@ def api_buscar():
     consulta = request.args.get("q", "").strip()
     almacen = request.args.get("almacen", "").strip()
     ubic = request.args.get("ubic", "").strip()
-    if not consulta:
+    if not consulta and not ubic:
         return jsonify({"resultados": [], "total": 0})
     if not almacen:
         almacenes = get_almacenes()
@@ -561,12 +574,14 @@ def api_buscar():
     if COL_CODIGO not in df.columns or COL_DESCRIPCION not in df.columns:
         return jsonify({"error": f"Columnas no encontradas. Disponibles: {list(df.columns)}"})
 
-    consulta_norm = normalizar(consulta)
-    mask = df[COL_CODIGO].apply(normalizar).str.contains(consulta_norm, na=False) | \
-           df[COL_DESCRIPCION].apply(normalizar).str.contains(consulta_norm, na=False)
-    if ubic and COL_UBICACION in df.columns:
-        ubic_norm = normalizar(ubic)
-        mask = mask & (df[COL_UBICACION].apply(normalizar) == ubic_norm)
+    if ubic:
+        mask = df[COL_UBICACION].apply(normalizar) == normalizar(ubic)
+    else:
+        mask = pd.Series([True] * len(df))
+    if consulta:
+        consulta_norm = normalizar(consulta)
+        mask = mask & (df[COL_CODIGO].apply(normalizar).str.contains(consulta_norm, na=False) |
+                       df[COL_DESCRIPCION].apply(normalizar).str.contains(consulta_norm, na=False))
     filtrado = df[mask]
 
     total = len(filtrado)
