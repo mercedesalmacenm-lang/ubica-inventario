@@ -138,8 +138,10 @@ PAGINA = """
   .sub{color:var(--muted);font-size:14px;margin-top:6px;}
   .almacen-wrap{max-width:640px;margin:0 auto;padding:16px 18px 0;}
   .almacen-label{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin-bottom:6px;}
-  #almacen{width:100%;font-size:16px;padding:12px 14px;border-radius:8px;border:2px solid var(--steel);background:var(--panel);color:var(--paper);outline:none;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238b8d92' fill='none' stroke-width='2'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;cursor:pointer;}
-  #almacen:focus{border-color:var(--amber)}
+  .almacen-row{display:flex;gap:12px;align-items:flex-start;}
+  .almacen-row .col{flex:1;min-width:0;}
+  #almacen,#ubic{width:100%;font-size:16px;padding:12px 14px;border-radius:8px;border:2px solid var(--steel);background:var(--panel);color:var(--paper);outline:none;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238b8d92' fill='none' stroke-width='2'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;cursor:pointer;}
+  #almacen:focus,#ubic:focus{border-color:var(--amber)}
   main{max-width:640px;margin:0 auto;padding:22px 18px 60px;}
   .search-wrap{position:relative;margin-bottom:22px;}
   #q{width:100%;font-size:19px;padding:16px 16px 16px 46px;border-radius:10px;border:2px solid var(--steel);background:var(--panel);color:var(--paper);outline:none;transition:border-color .15s ease;}
@@ -213,9 +215,17 @@ PAGINA = """
     <p class="sub">{{ sub_text }}</p>
   </header>
   <div class="almacen-wrap">
-    <div class="almacen-label">Almacén</div>
-    <div class="almacen-fijo" id="almacenFijo" style="display:none"></div>
-    <select id="almacen"><option value="">Cargando almacenes...</option></select>
+    <div class="almacen-row">
+      <div class="col">
+        <div class="almacen-label">Almacén</div>
+        <div class="almacen-fijo" id="almacenFijo" style="display:none"></div>
+        <select id="almacen"><option value="">Cargando almacenes...</option></select>
+      </div>
+      <div class="col" id="ubicWrap" style="display:none">
+        <div class="almacen-label">Ubicación</div>
+        <select id="ubic"><option value="">Todas</option></select>
+      </div>
+    </div>
   </div>
   <main>
     <div class="search-wrap">
@@ -266,9 +276,26 @@ function iniciarApp(){
     document.getElementById('almacen').style.display = 'none';
     document.querySelector('.almacen-label').textContent = 'Tu almacén';
     cargarFecha(ALMACEN_FIJO);
+    cargarUbicaciones(ALMACEN_FIJO);
   } else {
     cargarAlmacenes();
   }
+}
+
+async function cargarUbicaciones(almacen){
+  const wrap = document.getElementById('ubicWrap');
+  const select = document.getElementById('ubic');
+  select.innerHTML = '<option value="">Todas</option>';
+  wrap.style.display = 'none';
+  if(!almacen) return;
+  try{
+    const r = await fetch('/api/ubicaciones?almacen=' + encodeURIComponent(almacen));
+    const d = await r.json();
+    if(d.ubicaciones && d.ubicaciones.length){
+      select.innerHTML = '<option value="">Todas</option>' + d.ubicaciones.map(u => '<option value="'+u+'">'+u+'</option>').join('');
+      wrap.style.display = 'block';
+    }
+  }catch(e){}
 }
 
 async function cargarFecha(almacen){
@@ -377,6 +404,12 @@ async function cargarAlmacenes(){
 almacenSelect.addEventListener('change', () => {
   localStorage.setItem('ubica_almacen', almacenSelect.value);
   if(almacenSelect.value) cargarFecha(almacenSelect.value);
+  cargarUbicaciones(almacenSelect.value);
+  const q = input.value.trim();
+  if(q) buscar(q, 1);
+});
+
+document.getElementById('ubic').addEventListener('change', () => {
   const q = input.value.trim();
   if(q) buscar(q, 1);
 });
@@ -394,8 +427,9 @@ async function buscar(q, page){
   page = page || 1;
   try{
     const almacen = getAlmacen();
+    const ubic = document.getElementById('ubic').value;
     status.textContent = 'Buscando...';
-    const res = await fetch('/api/buscar?q=' + encodeURIComponent(q) + '&page=' + page + '&almacen=' + encodeURIComponent(almacen));
+    const res = await fetch('/api/buscar?q=' + encodeURIComponent(q) + '&page=' + page + '&almacen=' + encodeURIComponent(almacen) + '&ubic=' + encodeURIComponent(ubic));
     const data = await res.json();
     if(data.error){ status.textContent=''; resultados.innerHTML='<p class="empty err">'+data.error+'</p>'; return; }
     const items = data.resultados;
@@ -494,10 +528,23 @@ def api_almacenes():
     return jsonify({"almacenes": get_almacenes()})
 
 
+@app.route("/api/ubicaciones")
+def api_ubicaciones():
+    almacen = request.args.get("almacen", "").strip()
+    if not almacen:
+        return jsonify({"ubicaciones": []})
+    df = get_dataframe(almacen)
+    if df.empty or COL_UBICACION not in df.columns:
+        return jsonify({"ubicaciones": []})
+    ubics = sorted({str(v).strip() for v in df[COL_UBICACION] if str(v).strip()})
+    return jsonify({"ubicaciones": ubics})
+
+
 @app.route("/api/buscar")
 def api_buscar():
     consulta = request.args.get("q", "").strip()
     almacen = request.args.get("almacen", "").strip()
+    ubic = request.args.get("ubic", "").strip()
     if not consulta:
         return jsonify({"resultados": [], "total": 0})
     if not almacen:
@@ -517,6 +564,9 @@ def api_buscar():
     consulta_norm = normalizar(consulta)
     mask = df[COL_CODIGO].apply(normalizar).str.contains(consulta_norm, na=False) | \
            df[COL_DESCRIPCION].apply(normalizar).str.contains(consulta_norm, na=False)
+    if ubic and COL_UBICACION in df.columns:
+        ubic_norm = normalizar(ubic)
+        mask = mask & (df[COL_UBICACION].apply(normalizar) == ubic_norm)
     filtrado = df[mask]
 
     total = len(filtrado)
