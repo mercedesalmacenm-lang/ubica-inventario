@@ -113,7 +113,7 @@ PAGINA = """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ubica | Consulta de inventario</title>
 <link rel="icon" type="image/png" href="/favicon.png">
-  :root{
+<style>
     --carbon:#181a1d;
     --panel:#212327;
     --steel:#3a3d43;
